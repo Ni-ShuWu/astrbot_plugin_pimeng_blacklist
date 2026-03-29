@@ -7,7 +7,7 @@ homepage: "https://github.com/your-repo/pimeng-blacklist"
 tags: ["blacklist", "cloud", "security", "management", "automation"]
 
 # AstrBot 版本要求
-astrbot_version: ">=4.1.0" 
+astrbot_version: ">=4.15.0" 
 # 声明支持平台
 support_platforms:
   - aiocqhttp
