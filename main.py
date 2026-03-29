@@ -169,6 +169,9 @@ class PimengBlacklistPlugin(Star):
         """拦截云黑用户"""
         user_id = str(event.get_sender_id())
         
+        # 判断是否为群聊
+        is_group = hasattr(event, 'get_group_id') and event.get_group_id() is not None
+        
         # 检查干净缓存
         if user_id in self.clean_cache:
             return
@@ -178,9 +181,6 @@ class PimengBlacklistPlugin(Star):
         if user_id in self.user_blacklist:
             data = self.user_blacklist[user_id]
             level = data.get("level", 1)
-            
-            # 判断是否为群聊
-            is_group = hasattr(event, 'get_group_id') and event.get_group_id() is not None
             
             # 判断是否主动唤醒bot（检查是否@bot或使用唤醒词）
             is_wake_up = False
