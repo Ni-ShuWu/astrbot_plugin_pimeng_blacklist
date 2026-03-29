@@ -55,6 +55,9 @@ class PimengBlacklistPlugin(Star):
         
     async def initialize(self):
         """初始化"""
+        # 验证配置参数
+        self._validate_config()
+        
         if not self.bot_token:
             self.logger.warning("Bot Token not configured! Plugin will work in read-only mode.")
         
@@ -229,40 +232,78 @@ class PimengBlacklistPlugin(Star):
                 # Bot在黑名单群组中，自动退群
                 self.logger.info(f"Bot in Blacklisted Group | Group: {group_id} | Level: {group_level}")
                 
-                # 尝试退群
-                try:
-                    # 尝试使用context的方法
-                    if hasattr(self.context, 'quit_group'):
-                        await self.context.quit_group(group_id)
+                # 使用统一错误处理方法尝试退群
+                if hasattr(self.context, 'quit_group'):
+                    _, error = await self._safe_execute(
+                        f"Bot退群 (群组: {group_id})",
+                        self.context.quit_group,
+                        group_id
+                    )
+                    if not error:
                         self.logger.info(f"Bot Quit Group | Group: {group_id}")
-                except Exception as e:
-                    self.logger.error(f"Quit Group Failed | Group: {group_id} | Error: {e}")
                 
                 # 停止事件传播
                 event.stop_event()
                 return
         
-        # 检查群组黑名单（仅用于自动退群）
-        if is_group:
-            group_id = str(event.get_group_id())
-            
-            # 检查群组是否在黑名单中
-            if group_id in self.group_blacklist:
-                data = self.group_blacklist[group_id]
-                level = data.get("level", 1)
-                
-                # 自动退出黑名单群组
-                if self.enable_auto_kick and level >= 3:
-                    try:
-                        await self._kick_member(group_id, data.get("user_id", ""))
-                        self.logger.info(f"Auto Kick Group | Group: {group_id} | Level: {level}")
-                    except Exception as e:
-                        self.logger.error(f"Kick Group Failed | Group: {group_id} | Error: {e}")
-        
-        # 加入干净缓存
+        # 加入干净缓存（优化：仅在缓存满时清理）
+        self._add_to_clean_cache(user_id)
+    
+    def _add_to_clean_cache(self, user_id: str):
+        """添加用户到干净缓存，优化缓存管理"""
+        # 仅在缓存满时清理，减少不必要的操作
         if len(self.clean_cache) >= self.clean_cache_max:
+            # 清理一半的缓存（保留最近的一半）
             self.clean_cache = set(list(self.clean_cache)[self.clean_cache_max//2:])
         self.clean_cache.add(user_id)
+    
+    async def _safe_execute(self, operation_name: str, operation_func, *args, **kwargs):
+        """安全执行操作，统一错误处理"""
+        try:
+            result = await operation_func(*args, **kwargs)
+            return result, None
+        except Exception as e:
+            error_msg = f"{operation_name} 失败: {str(e)}"
+            self.logger.error(error_msg)
+            return None, error_msg
+    
+    def _validate_config(self):
+        """验证配置参数的有效性"""
+        errors = []
+        
+        # 验证 API Base
+        if not self.api_base:
+            errors.append("api_base 未配置")
+        elif not self.api_base.startswith(("http://", "https://")):
+            errors.append("api_base 必须以 http:// 或 https:// 开头")
+        
+        # 验证 Bot Token
+        if not self.bot_token:
+            self.logger.warning("Bot Token 未配置，插件将以只读模式运行")
+        
+        # 验证同步间隔
+        if self.sync_interval < 60:
+            errors.append("sync_interval 不能小于 60 秒")
+        elif self.sync_interval > 3600:
+            self.logger.warning(f"sync_interval 过大 ({self.sync_interval}秒)，建议设置为 60-3600 秒")
+        
+        # 验证缓存大小
+        if self.clean_cache_max < 100:
+            errors.append("clean_cache_max 不能小于 100")
+        
+        # 验证请求超时
+        if self.request_timeout < 1:
+            errors.append("request_timeout 不能小于 1 秒")
+        elif self.request_timeout > 30:
+            self.logger.warning(f"request_timeout 过大 ({self.request_timeout}秒)，建议设置为 1-30 秒")
+        
+        # 如果有错误，记录并抛出异常
+        if errors:
+            error_msg = "配置验证失败: " + "; ".join(errors)
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        self.logger.info("配置验证通过")
     
     def _check_op(self, event: AstrMessageEvent) -> bool:
         # 检查事件发送者是否为管理员
@@ -617,13 +658,15 @@ class PimengBlacklistPlugin(Star):
         # Bot在黑名单群组中，自动退群
         self.logger.info(f"Bot in Blacklisted Group | Group: {group_id} | Level: {level}")
         
-        # 尝试退群
-        try:
-            if hasattr(self.context, 'quit_group'):
-                await self.context.quit_group(group_id)
+        # 使用统一错误处理方法尝试退群
+        if hasattr(self.context, 'quit_group'):
+            _, error = await self._safe_execute(
+                f"Bot退群 (群组: {group_id})",
+                self.context.quit_group,
+                group_id
+            )
+            if not error:
                 self.logger.info(f"Bot Quit Group | Group: {group_id}")
-        except Exception as e:
-            self.logger.error(f"Quit Group Failed | Group: {group_id} | Error: {e}")
     
     async def _api_check(self, user_id: str, user_type: str = "user") -> dict:
         return await self._api_request("POST", "/api/bot/check", {
