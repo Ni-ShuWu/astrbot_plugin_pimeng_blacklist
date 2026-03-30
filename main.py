@@ -4,7 +4,7 @@ from astrbot.api import logger, AstrBotConfig
 import asyncio
 import http.client
 import json
-from urllib.parse import urlparse
+import urllib.parse
 from typing import Dict, Set, Optional
 from datetime import datetime, timedelta
 from functools import wraps
@@ -13,7 +13,7 @@ __version__ = "2.6.0"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
-LEVEL_EMOJIS = {1: "\U0001F600", 2: "\U0001F6A1", 3: "\U0001F534", 4: "\U000026D4"}
+LEVEL_EMOJIS = {1: "🟢", 2: "🟡", 3: "🔴", 4: "⛔"}
 BOT_JOIN_KEYWORDS = ["邀请", "加入了群聊", "加入了", "加入群", "加群"]
 
 
@@ -42,7 +42,7 @@ def require_token(func):
 
 
 @register(
-    "astrbot_plugin_pimeng_the_blacklist",
+    "pimeng_blacklist",
     "N(Ni-ShuWu),P(Pimeng's)",
     "基于皮梦云黑库接入插件，可查询用户是否在黑名单中",
     __version__
@@ -67,16 +67,10 @@ class PimengBlacklistPlugin(Star):
         # 黑名单数据
         self.user_blacklist: Dict[str, dict] = {}
         self.group_blacklist: Dict[str, dict] = {}
-        
-        # 缓存：分别缓存用户和群组
-        self.user_clean_cache: Set[str] = set()
-        self.group_clean_cache: Set[str] = set()
+        self.clean_cache: Set[str] = set()
         
         # 提醒记录
         self.private_warned: Dict[str, datetime] = {}
-        
-        # 退群失败记录（避免高频重复尝试）
-        self._quit_group_failed: Set[str] = set()
     
     async def initialize(self):
         """初始化"""
@@ -131,9 +125,7 @@ class PimengBlacklistPlugin(Star):
             
             self.user_blacklist.clear()
             self.group_blacklist.clear()
-            self.user_clean_cache.clear()
-            self.group_clean_cache.clear()
-            self._quit_group_failed.clear()
+            self.clean_cache.clear()
             
             for item in remote_list:
                 user_id = str(item.get("user_id", ""))
@@ -170,100 +162,90 @@ class PimengBlacklistPlugin(Star):
     
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def blacklist_interceptor(self, event: AstrMessageEvent):
-        """拦截云黑用户 - 修复：缓存逻辑和异步生成器问题"""
+        """拦截云黑用户"""
         user_id = str(event.get_sender_id())
-        is_group = self._is_group_event(event)
         
-        # 修复：分别检查用户和群组缓存，避免群组黑名单被跳过
-        if is_group:
-            if user_id in self.user_clean_cache:
-                return
-        else:
-            if user_id in self.user_clean_cache:
-                return
+        # 判断是否为群聊
+        is_group = hasattr(event, 'get_group_id') and event.get_group_id() is not None
+        
+        # 检查干净缓存
+        if user_id in self.clean_cache:
+            return
         
         # 检查用户黑名单
         if user_id in self.user_blacklist:
-            # 修复：直接调用处理函数，不使用 await
-            self._handle_blacklisted_user(event, user_id)
-            return
-        
-        # 检查群组黑名单
-        if is_group:
-            group_id = str(event.get_group_id())
-            if group_id in self.group_blacklist:
-                await self._handle_blacklisted_group(event, group_id)
+            data = self.user_blacklist[user_id]
+            level = data.get("level", 1)
+            
+            # 判断是否主动唤醒bot（检查是否@bot或使用唤醒词）
+            is_wake_up = False
+            if hasattr(event, 'is_wake_up'):
+                is_wake_up = event.is_wake_up()
+            
+            # 私聊模式：全部拦截，仅主动唤醒时每天提醒一次
+            if not is_group:
+                now = datetime.now()
+                last_warn = self.private_warned.get(user_id)
+                
+                # 检查是否需要提醒（仅主动唤醒时）
+                should_warn = False
+                if is_wake_up:
+                    # 检查是否在同一天提醒过
+                    if last_warn is None or last_warn.date() != now.date():
+                        # 首次提醒或新的一天，提醒
+                        should_warn = True
+                        self.private_warned[user_id] = now
+                        self.logger.info(f"Private Warn | User: {user_id} | Level: {level}")
+                
+                if should_warn:
+                    # 发送提醒并拦截消息
+                    yield event.plain_result(
+                        f"⚠️ 您已被列入云黑名单。\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"违规等级: {level}\n"
+                        f"原因: {data.get('reason', '未知')}\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"详情与申诉: https://云黑.皮梦.wtf"
+                    )
+                
+                # 停止事件传播，拦截消息
+                event.stop_event()
                 return
         
-        # 加入缓存
+        # 检查群组黑名单（仅用于自动踢出和退群）
         if is_group:
-            self.user_clean_cache.add(user_id)
-        else:
-            self.group_clean_cache.add(user_id)
-    
-    def _is_group_event(self, event: AstrMessageEvent) -> bool:
-        """判断是否为群聊事件"""
-        return hasattr(event, 'get_group_id') and event.get_group_id() is not None
-    
-    def _handle_blacklisted_user(self, event: AstrMessageEvent, user_id: str):
-        """处理黑名单用户 - 修复：移除 async，改为普通函数"""
-        data = self.user_blacklist[user_id]
-        level = data.get("level", 1)
-        is_group = self._is_group_event(event)
-        
-        # 私聊模式：发送提醒（仅主动唤醒时每天一次）
-        if not is_group:
-            is_wake_up = getattr(event, 'is_wake_up', lambda: False)()
+            group_id = str(event.get_group_id())
             
-            if is_wake_up and self._should_warn_private(user_id):
-                # 修复：直接 yield 消息，不使用 async for
-                yield event.plain_result(
-                    f"⚠️ 您已被列入云黑名单。\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"违规等级: {level}\n"
-                    f"原因: {data.get('reason', '未知')}\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"详情与申诉: https://云黑.皮梦.wtf"
-                )
+            # 检查群组是否在黑名单中
+            if group_id in self.group_blacklist:
+                group_data = self.group_blacklist[group_id]
+                group_level = group_data.get("level", 1)
+                
+                # Bot在黑名单群组中，自动退群
+                self.logger.info(f"Bot in Blacklisted Group | Group: {group_id} | Level: {group_level}")
+                
+                # 尝试退群
+                try:
+                    if hasattr(self.context, 'quit_group'):
+                        await self.context.quit_group(group_id)
+                        self.logger.info(f"Bot Quit Group | Group: {group_id}")
+                except Exception as e:
+                    self.logger.error(f"Quit Group Failed | Group: {group_id} | Error: {e}")
+                
+                # 停止事件传播
+                event.stop_event()
+                return
         
-        # 统一拦截：无论群聊还是私聊，都终止事件
-        event.stop_event()
+        # 加入干净缓存
+        self._add_to_clean_cache(user_id)
     
-    def _should_warn_private(self, user_id: str) -> bool:
-        """检查是否应该发送私聊提醒"""
-        now = datetime.now()
-        last_warn = self.private_warned.get(user_id)
-        
-        if last_warn is None or last_warn.date() != now.date():
-            self.private_warned[user_id] = now
-            return True
-        return False
-    
-    async def _handle_blacklisted_group(self, event: AstrMessageEvent, group_id: str):
-        """处理黑名单群组 - 修复：避免高频重复退群"""
-        # 如果已经尝试过退群且失败，不再重复尝试
-        if group_id in self._quit_group_failed:
-            event.stop_event()
-            return
-        
-        data = self.group_blacklist[group_id]
-        level = data.get("level", 1)
-        
-        self.logger.info(f"Bot in blacklisted group | Group: {group_id} | Level: {level}")
-        
-        # 尝试退群
-        if hasattr(self.context, 'quit_group'):
-            success, error = await self._safe_execute(
-                self.context.quit_group, group_id
-            )
-            if success:
-                self.logger.info(f"Bot quit group | Group: {group_id}")
-            else:
-                # 记录退群失败，避免高频重复尝试
-                self._quit_group_failed.add(group_id)
-                self.logger.error(f"Quit group failed | Group: {group_id} | Error: {error}")
-        
-        event.stop_event()
+    def _add_to_clean_cache(self, user_id: str):
+        """添加用户到干净缓存，优化缓存管理"""
+        # 仅在缓存满时清理，减少不必要的操作
+        if len(self.clean_cache) >= self.clean_cache_max:
+            # 清理一半的缓存（保留最近的一半）
+            self.clean_cache = set(list(self.clean_cache)[self.clean_cache_max // 2:])
+        self.clean_cache.add(user_id)
     
     async def _safe_execute(self, func, *args, **kwargs):
         """安全执行异步函数"""
@@ -280,14 +262,14 @@ class PimengBlacklistPlugin(Star):
     @filter.command("bl_status")
     @require_op
     async def cmd_status(self, event: AstrMessageEvent):
-        """查看同步状态 - 修复：时间计算"""
+        """查看同步状态"""
         if not self.last_sync:
             yield event.plain_result("❌ 首次同步尚未完成")
             return
         
         next_sync = self.last_sync + timedelta(seconds=self.sync_interval)
         time_diff = (next_sync - datetime.now()).total_seconds()
-        # 修复：使用 total_seconds() 避免负数问题
+        # 使用 total_seconds() 避免负数问题
         time_left = max(0, int(time_diff // 60))
         
         yield event.plain_result(
@@ -295,8 +277,7 @@ class PimengBlacklistPlugin(Star):
             f"━━━━━━━━━━━━━━\n"
             f"👤 用户黑名单: {len(self.user_blacklist)}\n"
             f"👥 群组黑名单: {len(self.group_blacklist)}\n"
-            f"🗑️ 用户缓存: {len(self.user_clean_cache)}\n"
-            f"🗑️ 群组缓存: {len(self.group_clean_cache)}\n"
+            f"🗑️ 干净缓存: {len(self.clean_cache)}\n"
             f"🕐 上次同步: {self.last_sync.strftime('%H:%M:%S')}\n"
             f"⏰ 下次同步: {time_left}分钟后\n"
             f"🔄 同步间隔: {self.sync_interval // 60}分钟"
@@ -316,12 +297,7 @@ class PimengBlacklistPlugin(Star):
     
     @filter.command("bl_check")
     async def cmd_check(self, event: AstrMessageEvent, target: str = None, user_type: str = "user"):
-        """检查黑名单状态 - 修复：API失败时正确处理 + token校验"""
-        # 修复：添加 token 前置校验
-        if not self.bot_token:
-            yield event.plain_result("❌ 未配置 Bot Token，无法进行实时查询")
-            return
-        
+        """检查黑名单状态"""
         # 参数处理
         if target is not None:
             target = str(target)
@@ -355,7 +331,7 @@ class PimengBlacklistPlugin(Star):
         # API实时检查
         result = await self._api_check(target_id, user_type)
         
-        # 修复：先检查API调用是否成功
+        # 先检查API调用是否成功
         if not result.get("success"):
             error_msg = result.get('message', '未知错误')
             yield event.plain_result(f"❌ 查询失败: {error_msg}")
@@ -377,7 +353,7 @@ class PimengBlacklistPlugin(Star):
     @require_op
     @require_token
     async def cmd_add(self, event: AstrMessageEvent, user_id: str = None, reason: str = None, level: int = 1):
-        """添加到黑名单 - 修复：等级范围统一为1-4"""
+        """添加到黑名单"""
         if not user_id or not reason:
             yield event.plain_result("❌ 参数错误：需要提供user_id和reason")
             return
@@ -394,7 +370,7 @@ class PimengBlacklistPlugin(Star):
             yield event.plain_result("❌ 参数错误：user_id必须是数字")
             return
         
-        # 修复：等级范围统一为1-4，与LEVEL_NAMES一致
+        # 等级范围统一为1-4
         if not 1 <= level <= 4:
             yield event.plain_result("❌ 参数错误：level必须在1-4之间")
             return
@@ -412,7 +388,7 @@ class PimengBlacklistPlugin(Star):
         })
         
         if result.get("success"):
-            self.user_clean_cache.discard(user_id)
+            self.clean_cache.discard(user_id)
             await self._sync_blacklist()
             yield event.plain_result(
                 f"✅ 已添加到黑名单\n"
@@ -446,7 +422,7 @@ class PimengBlacklistPlugin(Star):
         
         if result.get("success"):
             self.user_blacklist.pop(user_id, None)
-            self.user_clean_cache.discard(user_id)
+            self.clean_cache.discard(user_id)
             self.private_warned.pop(user_id, None)
             yield event.plain_result(f"✅ 已从黑名单移除: {user_id}")
         else:
@@ -527,6 +503,7 @@ class PimengBlacklistPlugin(Star):
         lines.extend([
             "━━━━━━━━━━━━━━",
             "📝 参数说明",
+            "━━━━━━━━━━━━━━",
             "• ID: QQ号或群号",
             "• user/group: 查询类型，默认user",
             "• 等级: 1-轻微 2-一般 3-平台 4-严重（等级4需面板操作）",
@@ -557,14 +534,12 @@ class PimengBlacklistPlugin(Star):
         self.logger.info(f"Bot joined blacklisted group | Group: {group_id} | Level: {level}")
         
         # 尝试退群
-        if hasattr(self.context, 'quit_group'):
-            success, error = await self._safe_execute(
-                self.context.quit_group, group_id
-            )
-            if success:
+        try:
+            if hasattr(self.context, 'quit_group'):
+                await self.context.quit_group(group_id)
                 self.logger.info(f"Bot quit group | Group: {group_id}")
-            else:
-                self.logger.error(f"Quit group failed | Group: {group_id} | Error: {error}")
+        except Exception as e:
+            self.logger.error(f"Quit group failed | Group: {group_id} | Error: {e}")
     
     async def _api_check(self, user_id: str, user_type: str = "user") -> dict:
         """API检查黑名单"""
@@ -574,22 +549,13 @@ class PimengBlacklistPlugin(Star):
         })
     
     async def _api_request(self, method: str, endpoint: str, data: dict = None) -> dict:
-        """发送API请求（带重试）- 修复：完整处理api_base和协议"""
-        # 修复：完整解析 api_base，保留路径部分
+        """发送API请求（带重试）- 修复：使用配置的api_base"""
+        # 修复：解析配置的api_base获取主机名
         parsed = urllib.parse.urlparse(self.api_base)
         host = parsed.netloc or "cloudblack-api.07210700.xyz"
-        path = parsed.path or ""
-        
-        # 修复：根据协议选择正确的连接类型
-        use_https = parsed.scheme == "https" or (not parsed.scheme and self.api_base.startswith("https://"))
         
         def _make_request():
-            # 修复：根据协议选择连接类型
-            if use_https:
-                conn = http.client.HTTPSConnection(host, timeout=self.request_timeout)
-            else:
-                conn = http.client.HTTPConnection(host, timeout=self.request_timeout)
-            
+            conn = http.client.HTTPSConnection(host, timeout=self.request_timeout)
             try:
                 headers = {
                     "Authorization": self.bot_token,
@@ -603,9 +569,7 @@ class PimengBlacklistPlugin(Star):
                 else:
                     payload = None
                 
-                # 修复：拼接完整路径（api_base的path + endpoint）
-                full_path = path + endpoint
-                conn.request(method, full_path, payload, headers)
+                conn.request(method, endpoint, payload, headers)
                 res = conn.getresponse()
                 response_data = res.read().decode("utf-8")
                 
