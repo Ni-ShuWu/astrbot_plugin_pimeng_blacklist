@@ -4,6 +4,7 @@ from astrbot.api import logger, AstrBotConfig
 import asyncio
 import http.client
 import json
+import urllib.parse
 from typing import Dict, Set, Optional
 from datetime import datetime, timedelta
 from functools import wraps
@@ -70,6 +71,9 @@ class PimengBlacklistPlugin(Star):
         
         # 提醒记录
         self.private_warned: Dict[str, datetime] = {}
+        
+        # 退群失败记录（避免高频重复尝试）
+        self._quit_group_failed: Set[str] = set()
     
     async def initialize(self):
         """初始化"""
@@ -125,6 +129,7 @@ class PimengBlacklistPlugin(Star):
             self.user_blacklist.clear()
             self.group_blacklist.clear()
             self.clean_cache.clear()
+            self._quit_group_failed.clear()  # 清空退群失败记录
             
             for item in remote_list:
                 user_id = str(item.get("user_id", ""))
@@ -188,25 +193,33 @@ class PimengBlacklistPlugin(Star):
         return hasattr(event, 'get_group_id') and event.get_group_id() is not None
     
     async def _handle_blacklisted_user(self, event: AstrMessageEvent, user_id: str):
-        """处理黑名单用户"""
+        """处理黑名单用户 - 修复：统一拦截逻辑"""
         data = self.user_blacklist[user_id]
         level = data.get("level", 1)
+        is_group = self._is_group_event(event)
         
-        # 私聊模式：全部拦截，仅主动唤醒时每天提醒一次
-        if not self._is_group_event(event):
+        # 私聊模式：发送提醒（仅主动唤醒时每天一次）
+        if not is_group:
             is_wake_up = getattr(event, 'is_wake_up', lambda: False)()
             
             if is_wake_up and self._should_warn_private(user_id):
-                yield event.plain_result(
-                    f"⚠️ 您已被列入云黑名单。\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"违规等级: {level}\n"
-                    f"原因: {data.get('reason', '未知')}\n"
-                    f"━━━━━━━━━━━━━━\n"
-                    f"详情与申诉: https://云黑.皮梦.wtf"
-                )
-            
-            event.stop_event()
+                # 修复：使用 async for 消费生成器
+                async for result in self._send_blacklist_warning(event, level, data):
+                    yield result
+        
+        # 统一拦截：无论群聊还是私聊，都终止事件
+        event.stop_event()
+    
+    async def _send_blacklist_warning(self, event: AstrMessageEvent, level: int, data: dict):
+        """发送黑名单警告消息"""
+        yield event.plain_result(
+            f"⚠️ 您已被列入云黑名单。\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"违规等级: {level}\n"
+            f"原因: {data.get('reason', '未知')}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"详情与申诉: https://云黑.皮梦.wtf"
+        )
     
     def _should_warn_private(self, user_id: str) -> bool:
         """检查是否应该发送私聊提醒"""
@@ -219,7 +232,12 @@ class PimengBlacklistPlugin(Star):
         return False
     
     async def _handle_blacklisted_group(self, event: AstrMessageEvent, group_id: str):
-        """处理黑名单群组"""
+        """处理黑名单群组 - 修复：避免高频重复退群"""
+        # 如果已经尝试过退群且失败，不再重复尝试
+        if group_id in self._quit_group_failed:
+            event.stop_event()
+            return
+        
         data = self.group_blacklist[group_id]
         level = data.get("level", 1)
         
@@ -233,6 +251,8 @@ class PimengBlacklistPlugin(Star):
             if success:
                 self.logger.info(f"Bot quit group | Group: {group_id}")
             else:
+                # 记录退群失败，避免高频重复尝试
+                self._quit_group_failed.add(group_id)
                 self.logger.error(f"Quit group failed | Group: {group_id} | Error: {error}")
         
         event.stop_event()
@@ -258,13 +278,15 @@ class PimengBlacklistPlugin(Star):
     @filter.command("bl_status")
     @require_op
     async def cmd_status(self, event: AstrMessageEvent):
-        """查看同步状态"""
+        """查看同步状态 - 修复：时间计算"""
         if not self.last_sync:
             yield event.plain_result("❌ 首次同步尚未完成")
             return
         
         next_sync = self.last_sync + timedelta(seconds=self.sync_interval)
-        time_left = max(0, (next_sync - datetime.now()).seconds // 60)
+        time_diff = (next_sync - datetime.now()).total_seconds()
+        # 修复：使用 total_seconds() 避免负数问题
+        time_left = max(0, int(time_diff // 60))
         
         yield event.plain_result(
             f"🛡️ 皮梦云黑库 v{__version__}\n"
@@ -291,7 +313,7 @@ class PimengBlacklistPlugin(Star):
     
     @filter.command("bl_check")
     async def cmd_check(self, event: AstrMessageEvent, target: str = None, user_type: str = "user"):
-        """检查黑名单状态"""
+        """检查黑名单状态 - 修复：API失败时正确处理"""
         # 参数处理
         if target is not None:
             target = str(target)
@@ -325,6 +347,13 @@ class PimengBlacklistPlugin(Star):
         # API实时检查
         result = await self._api_check(target_id, user_type)
         
+        # 修复：先检查API调用是否成功
+        if not result.get("success"):
+            error_msg = result.get('message', '未知错误')
+            yield event.plain_result(f"❌ 查询失败: {error_msg}")
+            return
+        
+        # API调用成功，检查是否在黑名单中
         if result.get("in_blacklist"):
             data = result.get("data", {})
             yield event.plain_result(
@@ -340,7 +369,7 @@ class PimengBlacklistPlugin(Star):
     @require_op
     @require_token
     async def cmd_add(self, event: AstrMessageEvent, user_id: str = None, reason: str = None, level: int = 1):
-        """添加到黑名单"""
+        """添加到黑名单 - 修复：等级范围统一为1-4"""
         if not user_id or not reason:
             yield event.plain_result("❌ 参数错误：需要提供user_id和reason")
             return
@@ -357,8 +386,14 @@ class PimengBlacklistPlugin(Star):
             yield event.plain_result("❌ 参数错误：user_id必须是数字")
             return
         
-        if not 1 <= level <= 3:
-            yield event.plain_result("❌ 参数错误：level必须在1-3之间")
+        # 修复：等级范围统一为1-4，与LEVEL_NAMES一致
+        if not 1 <= level <= 4:
+            yield event.plain_result("❌ 参数错误：level必须在1-4之间")
+            return
+        
+        # 等级4需要在管理面板操作
+        if level == 4:
+            yield event.plain_result("❌ 等级4需要在管理面板操作: https://云黑.皮梦.wtf/admin")
             return
         
         result = await self._api_request("POST", "/api/bot/add", {
@@ -486,7 +521,7 @@ class PimengBlacklistPlugin(Star):
             "📝 参数说明",
             "• ID: QQ号或群号",
             "• user/group: 查询类型，默认user",
-            "• 等级: 1-轻微 2-一般 3-平台 4-严重",
+            "• 等级: 1-轻微 2-一般 3-平台 4-严重（等级4需面板操作）",
             "━━━━━━━━━━━━━━",
             "🌐 申诉: https://云黑.皮梦.wtf",
             f"👤 身份: {'管理员' if is_op else '用户'}",
@@ -531,10 +566,13 @@ class PimengBlacklistPlugin(Star):
         })
     
     async def _api_request(self, method: str, endpoint: str, data: dict = None) -> dict:
-        """发送API请求（带重试）"""
+        """发送API请求（带重试）- 修复：使用配置的api_base"""
+        # 修复：解析配置的api_base获取主机名
+        parsed = urllib.parse.urlparse(self.api_base)
+        host = parsed.netloc or "cloudblack-api.07210700.xyz"
         
         def _make_request():
-            conn = http.client.HTTPSConnection("cloudblack-api.07210700.xyz", timeout=self.request_timeout)
+            conn = http.client.HTTPSConnection(host, timeout=self.request_timeout)
             try:
                 headers = {
                     "Authorization": self.bot_token,
