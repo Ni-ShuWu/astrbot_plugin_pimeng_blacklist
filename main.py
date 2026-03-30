@@ -4,8 +4,8 @@ from astrbot.api import logger, AstrBotConfig
 import asyncio
 import http.client
 import json
-import urllib.parse
-from typing import Dict, Set, Optional, Tuple
+from urllib.parse import urlparse
+from typing import Dict, Set, Optional
 from datetime import datetime, timedelta
 from functools import wraps
 
