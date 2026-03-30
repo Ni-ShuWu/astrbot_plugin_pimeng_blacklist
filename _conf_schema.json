@@ -25,12 +25,6 @@
     "hint": "缓存未被拉黑的用户数量上限，避免内存占用过大",
     "default": 10000
   },
-  "enable_auto_kick": {
-    "type": "bool",
-    "description": "启用自动踢出",
-    "hint": "是否自动踢出加入群组的黑名单用户",
-    "default": true
-  },
   "request_timeout": {
     "type": "int",
     "description": "API请求超时（秒）",
