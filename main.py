@@ -42,7 +42,7 @@ def require_token(func):
 
 
 @register(
-    "pimeng_blacklist",
+    "astrbot_plugin_pimeng_the_blacklist",
     "N(Ni-ShuWu),P(Pimeng's)",
     "基于皮梦云黑库接入插件，可查询用户是否在黑名单中",
     __version__

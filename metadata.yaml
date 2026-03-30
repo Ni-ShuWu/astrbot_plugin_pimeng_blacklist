@@ -1,4 +1,4 @@
-name: "astrbot_plugin_pimeng_blacklist"
+name: "astrbot_plugin_pimeng_the_blacklist"
 version: "2.6.0"
 description: "基于皮梦云黑库接入插件 - 支持查询/添加/删除/同步/自动踢出黑名单成员"
 author: "N(Ni-ShuWu),P(Pimeng's)"
