@@ -2,20 +2,20 @@
   "api_base": {
     "type": "string",
     "description": "API 基础地址",
-    "hint": "皮梦云黑库API地址",
+    "hint": "皮梦云黑库 API 地址",
     "default": "https://cloudblack-api.07210700.xyz"
   },
   "bot_token": {
     "type": "string",
     "description": "Bot Token",
-    "hint": "从皮梦云黑库获取的Bot Token，用于API认证",
+    "hint": "从皮梦云黑库获取的 Bot Token，用于 API 认证",
     "obvious_hint": true,
     "required": true
   },
   "sync_interval": {
     "type": "int",
     "description": "同步间隔（秒）",
-    "hint": "自动同步云黑库的间隔时间，建议300秒（5分钟）",
+    "hint": "自动同步云黑库的间隔时间，建议 300 秒（5 分钟）",
     "default": 300,
     "slider": {"min": 60, "max": 3600, "step": 60}
   },
@@ -25,10 +25,16 @@
     "hint": "缓存未被拉黑的用户数量上限，避免内存占用过大",
     "default": 10000
   },
+  "enable_auto_kick": {
+    "type": "bool",
+    "description": "启用自动踢人",
+    "hint": "是否自动踢出等级≥3 的黑名单用户",
+    "default": true
+  },
   "request_timeout": {
     "type": "int",
-    "description": "API请求超时（秒）",
-    "hint": "API请求的超时时间，建议10秒",
+    "description": "API 请求超时（秒）",
+    "hint": "API 请求的超时时间，建议 10 秒",
     "default": 10
   }
 }
