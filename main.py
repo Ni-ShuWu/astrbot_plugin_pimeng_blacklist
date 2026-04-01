@@ -309,14 +309,28 @@ class PimengBlacklistPlugin(Star):
         
         try:
             client = event.bot
-            # 修复：从 event 中获取 bot_id，避免空字符串
-            bot_id = getattr(event, 'self_id', None)
+            # 修复：从 event.message_obj.self_id 获取 Bot ID
+            bot_id = None
+            
+            # 优先从 event.message_obj.self_id 获取
+            if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'self_id'):
+                bot_id = event.message_obj.self_id
+            
+            # 如果还是为空，尝试从 event.self_id 获取（兼容旧版本）
             if not bot_id:
-                bot_id = self.context.get_bot_id() if hasattr(self.context, 'get_bot_id') else None
+                bot_id = getattr(event, 'self_id', None)
+            
+            # 如果还是为空，尝试从 context 获取
+            if not bot_id and hasattr(self.context, 'get_bot_id'):
+                bot_id = self.context.get_bot_id()
+            
+            # 如果还是为空，尝试从 event.bot.self_id 获取
+            if not bot_id and hasattr(event, 'bot'):
+                bot_id = getattr(event.bot, 'self_id', None)
             
             # 如果 bot_id 为空，直接返回 False
             if not bot_id:
-                self.logger.warning(f"无法获取 Bot ID | Group: {group_id}")
+                self.logger.warning(f"无法获取 Bot ID | Group: {group_id} | Event type: {type(event)}")
                 return False
             
             # 获取 Bot 和对方的群成员信息
