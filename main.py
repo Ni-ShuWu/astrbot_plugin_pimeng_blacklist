@@ -309,7 +309,15 @@ class PimengBlacklistPlugin(Star):
         
         try:
             client = event.bot
-            bot_id = str(self.context.get_bot_id()) if hasattr(self.context, 'get_bot_id') else ""
+            # 修复：从 event 中获取 bot_id，避免空字符串
+            bot_id = getattr(event, 'self_id', None)
+            if not bot_id:
+                bot_id = self.context.get_bot_id() if hasattr(self.context, 'get_bot_id') else None
+            
+            # 如果 bot_id 为空，直接返回 False
+            if not bot_id:
+                self.logger.warning(f"无法获取 Bot ID | Group: {group_id}")
+                return False
             
             # 获取 Bot 和对方的群成员信息
             bot_info = await client.api.call_action(
