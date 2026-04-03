@@ -27,6 +27,9 @@ class EventHandler:
         
         # Bot加入群聊关键词
         self.BOT_JOIN_KEYWORDS = ["邀请", "加入了群聊", "加入了", "加入群", "加群"]
+        
+        # 避免重复退群的集合
+        self.quit_groups: Set[str] = set()
     
     async def handle_message(self, event: AstrMessageEvent, context) -> Optional[str]:
         """处理消息事件 - 返回需要发送的消息，或None表示不发送"""
@@ -81,11 +84,20 @@ class EventHandler:
             
             # 检查群组是否在黑名单中（直接退群，不检查等级）
             if self.service.is_group_blacklisted(group_id):
+                # 检查是否已经退过群
+                if group_id in self.quit_groups:
+                    self.logger.debug(f"Already quit group, ignoring | Group: {group_id}")
+                    event.stop_event()
+                    return None
+                
                 group_data = self.service.get_group_data(group_id)
                 group_level = group_data.get("level", 1) if group_data else 1
                 
                 # Bot在黑名单群组中，自动退群
                 self.logger.info(f"Bot in Blacklisted Group | Group: {group_id} | Level: {group_level}")
+                
+                # 标记为已退群
+                self.quit_groups.add(group_id)
                 
                 # 尝试退群
                 try:
@@ -94,6 +106,8 @@ class EventHandler:
                         self.logger.info(f"Bot Quit Group | Group: {group_id}")
                 except Exception as e:
                     self.logger.error(f"Quit Group Failed | Group: {group_id} | Error: {e}")
+                    # 退群失败，从集合中移除，允许重试
+                    self.quit_groups.discard(group_id)
                 
                 # 停止事件传播
                 event.stop_event()
@@ -158,10 +172,18 @@ class EventHandler:
         if not self.service.is_group_blacklisted(group_id):
             return False
         
+        # 检查是否已经退过群
+        if group_id in self.quit_groups:
+            self.logger.debug(f"Already quit group, ignoring join event | Group: {group_id}")
+            return True
+        
         group_data = self.service.get_group_data(group_id)
         level = group_data.get("level", 1) if group_data else 1
         
         self.logger.info(f"Bot joined blacklisted group | Group: {group_id} | Level: {level}")
+        
+        # 标记为已退群
+        self.quit_groups.add(group_id)
         
         # 尝试退群
         try:
@@ -171,6 +193,8 @@ class EventHandler:
                 return True
         except Exception as e:
             self.logger.error(f"Quit group failed | Group: {group_id} | Error: {e}")
+            # 退群失败，从集合中移除，允许重试
+            self.quit_groups.discard(group_id)
         
         return False
     
@@ -184,13 +208,15 @@ class EventHandler:
         """
         # 检查平台是否为 aiocqhttp
         if event.get_platform_name() != "aiocqhttp":
-            # 非 aiocqhttp 平台，默认可以踢出
-            return True
+            # 非 aiocqhttp 平台，默认不能踢出（安全第一）
+            self.logger.warning(f"非 aiocqhttp 平台，无法踢人 | Platform: {event.get_platform_name()}")
+            return False
         
         # 检查是否为 AiocqhttpMessageEvent 类型
         if AiocqhttpMessageEvent is None or not isinstance(event, AiocqhttpMessageEvent):
-            # 类型不匹配，默认可以踢出
-            return True
+            # 类型不匹配，默认不能踢出（安全第一）
+            self.logger.warning(f"非 AiocqhttpMessageEvent 类型，无法踢人 | Type: {type(event)}")
+            return False
         
         try:
             client = event.bot

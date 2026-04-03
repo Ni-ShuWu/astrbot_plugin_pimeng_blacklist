@@ -11,11 +11,12 @@ from .cache import BlacklistCache
 class BlacklistService:
     """黑名单服务管理器"""
     
-    def __init__(self, api: PimengAPI, cache: BlacklistCache, sync_interval: int, logger):
+    def __init__(self, api: PimengAPI, cache: BlacklistCache, sync_interval: int, logger, handler=None):
         self.api = api
         self.cache = cache
         self.sync_interval = sync_interval
         self.logger = logger
+        self.handler = handler
         
         # 黑名单数据
         self.user_blacklist: Dict[str, dict] = {}
@@ -96,6 +97,11 @@ class BlacklistService:
             # 清理过期提醒记录
             current_users = set(self.user_blacklist.keys())
             self.cache.clean_expired_records(current_users)
+            
+            # 清理 quit_groups 中已经不存在的群组
+            if hasattr(self, 'handler') and hasattr(self.handler, 'quit_groups'):
+                current_groups = set(self.group_blacklist.keys())
+                self.handler.quit_groups = {g for g in self.handler.quit_groups if g in current_groups}
             
             self.last_sync = datetime.now()
             self.logger.info(f"Sync OK | Users: {old_users}->{len(self.user_blacklist)}, Groups: {old_groups}->{len(self.group_blacklist)}")

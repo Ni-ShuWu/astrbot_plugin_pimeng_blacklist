@@ -17,9 +17,10 @@ class PimengAPI:
         self.request_timeout = request_timeout
         self.logger = logger
         
-        # 解析api_base获取主机名
+        # 解析api_base获取主机名和路径
         parsed = urllib.parse.urlparse(self.api_base)
         self.host = parsed.netloc or "cloudblack-api.07210700.xyz"
+        self.base_path = parsed.path or ""
     
     async def check_blacklist(self, user_id: str, user_type: str = "user") -> dict:
         """检查用户/群组是否在黑名单中"""
@@ -80,13 +81,20 @@ class PimengAPI:
             else:
                 payload = None
             
-            conn.request(method, endpoint, payload, headers)
+            # 构建完整的请求路径
+            full_path = self.base_path + endpoint
+            
+            conn.request(method, full_path, payload, headers)
             res = conn.getresponse()
             response_data = res.read().decode("utf-8")
             
             if res.status == 200:
                 try:
-                    return {"success": True, **json.loads(response_data)}
+                    api_response = json.loads(response_data)
+                    # 确保返回结构一致
+                    if "success" not in api_response:
+                        api_response["success"] = True
+                    return api_response
                 except json.JSONDecodeError:
                     return {"success": False, "message": f"JSON解析错误"}
             else:

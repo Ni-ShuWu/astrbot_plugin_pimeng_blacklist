@@ -1,5 +1,6 @@
 """皮梦云黑库插件主入口 - 整合各个模块"""
 
+import asyncio
 from astrbot.api.event import filter, AstrMessageEvent # type: ignore
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
@@ -10,7 +11,7 @@ from .cache import BlacklistCache
 from .service import BlacklistService
 from .handler import EventHandler
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
@@ -62,8 +63,9 @@ class PimengBlacklistPlugin(Star):
         # 初始化各个模块
         self.api = PimengAPI(api_base, bot_token, request_timeout, self.logger)
         self.cache = BlacklistCache()
-        self.service = BlacklistService(self.api, self.cache, sync_interval, self.logger)
-        self.handler = EventHandler(self.service, self.cache, enable_auto_kick, self.logger)
+        self.handler = EventHandler(None, self.cache, enable_auto_kick, self.logger)
+        self.service = BlacklistService(self.api, self.cache, sync_interval, self.logger, self.handler)
+        self.handler.service = self.service
     
     async def initialize(self):
         """初始化"""
@@ -152,16 +154,18 @@ class PimengBlacklistPlugin(Star):
                 )
             else:
                 result = await self.api.check_blacklist(target_id, "user")
-                if result.get("success") and result.get("in_blacklist"):
+                if not result.get("success"):
+                    results.append(f"❌ 用户查询失败：{result.get('message', '未知错误')}")
+                elif result.get("in_blacklist"):
                     data = result.get("data", {})
                     results.append(
                         f"⚠️ 用户已被拉黑（实时）\n"
                         f"ID: {target_id}\n"
                         f"等级：{data.get('level', 1)}\n"
-                        f"⚠️ 不在本地缓存，将自动同步"
+                        f"⚠️ 不在本地缓存，正在同步..."
                     )
-                elif not result.get("success"):
-                    results.append(f"❌ 用户查询失败：{result.get('message', '未知错误')}")
+                    # 触发增量同步
+                    asyncio.create_task(self.service.sync_blacklist())
                 else:
                     results.append(f"✅ 用户 {target_id} 未被拉黑")
             
@@ -180,16 +184,18 @@ class PimengBlacklistPlugin(Star):
                 )
             else:
                 result = await self.api.check_blacklist(target_id, "group")
-                if result.get("success") and result.get("in_blacklist"):
+                if not result.get("success"):
+                    results.append(f"❌ 群组查询失败：{result.get('message', '未知错误')}")
+                elif result.get("in_blacklist"):
                     data = result.get("data", {})
                     results.append(
                         f"⚠️ 群组已被拉黑（实时）\n"
                         f"ID: {target_id}\n"
                         f"等级：{data.get('level', 1)}\n"
-                        f"⚠️ 不在本地缓存，将自动同步"
+                        f"⚠️ 不在本地缓存，正在同步..."
                     )
-                elif not result.get("success"):
-                    results.append(f"❌ 群组查询失败：{result.get('message', '未知错误')}")
+                    # 触发增量同步
+                    asyncio.create_task(self.service.sync_blacklist())
                 else:
                     results.append(f"✅ 群组 {target_id} 未被拉黑")
             
@@ -238,12 +244,19 @@ class PimengBlacklistPlugin(Star):
         # API 调用成功，检查是否在黑名单中
         if result.get("in_blacklist"):
             data = result.get("data", {})
+            level = data.get('level', 1)
             yield event.plain_result(
                 f"⚠️ {type_name}已被拉黑（实时）\n"
+                f"━━━━━━━━━━━━━━\n"
                 f"ID: {target_id}\n"
-                f"等级：{data.get('level', 1)}\n"
-                f"⚠️ 不在本地缓存，将自动同步"
+                f"等级：{LEVEL_EMOJIS.get(level, '⚪')} {level} ({LEVEL_NAMES.get(level, '未知')})\n"
+                f"原因：{data.get('reason', '未知')}\n"
+                f"添加时间：{data.get('added_at', '未知')}\n"
+                f"添加者：{data.get('added_by', '未知')}\n"
+                f"⚠️ 不在本地缓存，正在同步..."
             )
+            # 触发增量同步
+            asyncio.create_task(self.service.sync_blacklist())
         else:
             yield event.plain_result(f"✅ {type_name} {target_id} 未被拉黑")
     
