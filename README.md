@@ -57,38 +57,38 @@ pimeng_blacklist:
 
 ## 配置说明
 
-### bot_token
+### bot\_token
 
 **类型**：字符串
 **必填**：是
 **说明**：从皮梦云黑库获取的Bot Token，用于API认证
 
-### api_base
+### api\_base
 
 **类型**：字符串
-**默认值**：https://cloudblack-api.07210700.xyz
+**默认值**：<https://cloudblack-api.07210700.xyz>
 **说明**：皮梦云黑库API地址
 
-### sync_interval
+### sync\_interval
 
 **类型**：整数
 **默认值**：300（5分钟）
 **范围**：60-3600秒
 **说明**：自动同步云黑库的间隔时间
 
-### clean_cache_max
+### clean\_cache\_max
 
 **类型**：整数
 **默认值**：10000
 **说明**：缓存未被拉黑的用户数量上限，避免内存占用过大
 
-### enable_auto_kick
+### enable\_auto\_kick
 
 **类型**：布尔值
 **默认值**：true
 **说明**：Bot在黑名单群组时自动退出，并自动踢出等级≥3的黑名单用户
 
-### request_timeout
+### request\_timeout
 
 **类型**：整数
 **默认值**：10
@@ -141,3 +141,8 @@ pimeng_blacklist:
 - v2.1.0: 使用http.client替代aiohttp，优化错误处理
 - v2.0.0: 完整API接口支持，添加同步机制
 - v1.0.0: 初始版本，基础查询功能
+
+## 另外，额
+
+- **这份代码已经越过“能用”的阶段，正在迈向“只能作者本人维护”的阶段**
+

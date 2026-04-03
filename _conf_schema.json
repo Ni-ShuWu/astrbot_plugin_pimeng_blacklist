@@ -19,12 +19,6 @@
     "default": 300,
     "slider": {"min": 60, "max": 3600, "step": 60}
   },
-  "clean_cache_max": {
-    "type": "int",
-    "description": "干净用户缓存上限",
-    "hint": "缓存未被拉黑的用户数量上限，避免内存占用过大",
-    "default": 10000
-  },
   "enable_auto_kick": {
     "type": "bool",
     "description": "启用自动踢人",
