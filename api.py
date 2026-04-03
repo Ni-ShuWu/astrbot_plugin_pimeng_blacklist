@@ -71,7 +71,7 @@ class PimengAPI:
         try:
             headers = {
                 "Authorization": self.bot_token,
-                "User-Agent": "PimengBlacklist/2.6.0",
+                "User-Agent": "PimengBlacklist/2.7.0",
                 "Accept": "application/json",
             }
             
