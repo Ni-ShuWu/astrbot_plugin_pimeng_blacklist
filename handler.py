@@ -1,7 +1,7 @@
 """事件处理模块 - 处理消息拦截、踢人权限检查等事件"""
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Set
 
 from astrbot.api.event import AstrMessageEvent
 
