@@ -153,21 +153,41 @@ class PimengBlacklistPlugin(Star):
                     f"添加者：{data.get('added_by', '未知') if data else '未知'}"
                 )
             else:
-                result = await self.api.check_blacklist(target_id, "user")
-                if not result.get("success"):
-                    results.append(f"❌ 用户查询失败：{result.get('message', '未知错误')}")
-                elif result.get("in_blacklist"):
-                    data = result.get("data", {})
-                    results.append(
-                        f"⚠️ 用户已被拉黑（实时）\n"
-                        f"ID: {target_id}\n"
-                        f"等级：{data.get('level', 1)}\n"
-                        f"⚠️ 不在本地缓存，正在同步..."
-                    )
-                    # 触发增量同步
-                    asyncio.create_task(self.service.sync_blacklist())
+                # 首先检查查询缓存
+                cached_result = self.service.get_cached_query(target_id, "user")
+                if cached_result:
+                    if cached_result.get("in_blacklist"):
+                        data = cached_result.get("data", {})
+                        results.append(
+                            f"⚠️ 用户已被拉黑（缓存）\n"
+                            f"ID: {target_id}\n"
+                            f"等级：{data.get('level', 1)}\n"
+                            f"📝 来自缓存查询"
+                        )
+                    else:
+                        results.append(f"✅ 用户 {target_id} 未被拉黑（缓存）")
                 else:
-                    results.append(f"✅ 用户 {target_id} 未被拉黑")
+                    # 检查查询限流
+                    if not self.service.can_query_api():
+                        results.append(f"⏳ 查询限流中，请稍后再试")
+                    else:
+                        result = await self.api.check_blacklist(target_id, "user")
+                        self.service.update_query_time()  # 更新查询时间
+                        self.service.set_cached_query(target_id, "user", result)  # 缓存结果
+                        if not result.get("success"):
+                            results.append(f"❌ 用户查询失败：{result.get('message', '未知错误')}")
+                        elif result.get("in_blacklist"):
+                            data = result.get("data", {})
+                            results.append(
+                                f"⚠️ 用户已被拉黑（实时）\n"
+                                f"ID: {target_id}\n"
+                                f"等级：{data.get('level', 1)}\n"
+                                f"⚠️ 不在本地缓存，正在同步..."
+                            )
+                            # 触发增量同步
+                            asyncio.create_task(self.service.sync_blacklist())
+                        else:
+                            results.append(f"✅ 用户 {target_id} 未被拉黑")
             
             # 查询群组
             if self.service.is_group_blacklisted(target_id):
@@ -183,21 +203,41 @@ class PimengBlacklistPlugin(Star):
                     f"添加者：{data.get('added_by', '未知') if data else '未知'}"
                 )
             else:
-                result = await self.api.check_blacklist(target_id, "group")
-                if not result.get("success"):
-                    results.append(f"❌ 群组查询失败：{result.get('message', '未知错误')}")
-                elif result.get("in_blacklist"):
-                    data = result.get("data", {})
-                    results.append(
-                        f"⚠️ 群组已被拉黑（实时）\n"
-                        f"ID: {target_id}\n"
-                        f"等级：{data.get('level', 1)}\n"
-                        f"⚠️ 不在本地缓存，正在同步..."
-                    )
-                    # 触发增量同步
-                    asyncio.create_task(self.service.sync_blacklist())
+                # 首先检查查询缓存
+                cached_result = self.service.get_cached_query(target_id, "group")
+                if cached_result:
+                    if cached_result.get("in_blacklist"):
+                        data = cached_result.get("data", {})
+                        results.append(
+                            f"⚠️ 群组已被拉黑（缓存）\n"
+                            f"ID: {target_id}\n"
+                            f"等级：{data.get('level', 1)}\n"
+                            f"📝 来自缓存查询"
+                        )
+                    else:
+                        results.append(f"✅ 群组 {target_id} 未被拉黑（缓存）")
                 else:
-                    results.append(f"✅ 群组 {target_id} 未被拉黑")
+                    # 检查查询限流（与用户查询共享限流）
+                    if not self.service.can_query_api():
+                        results.append(f"⏳ 查询限流中，请稍后再试")
+                    else:
+                        result = await self.api.check_blacklist(target_id, "group")
+                        self.service.update_query_time()  # 更新查询时间
+                        self.service.set_cached_query(target_id, "group", result)  # 缓存结果
+                        if not result.get("success"):
+                            results.append(f"❌ 群组查询失败：{result.get('message', '未知错误')}")
+                        elif result.get("in_blacklist"):
+                            data = result.get("data", {})
+                            results.append(
+                                f"⚠️ 群组已被拉黑（实时）\n"
+                                f"ID: {target_id}\n"
+                                f"等级：{data.get('level', 1)}\n"
+                                f"⚠️ 不在本地缓存，正在同步..."
+                            )
+                            # 触发增量同步
+                            asyncio.create_task(self.service.sync_blacklist())
+                        else:
+                            results.append(f"✅ 群组 {target_id} 未被拉黑")
             
             # 返回结果
             yield event.plain_result("\n\n".join(results))

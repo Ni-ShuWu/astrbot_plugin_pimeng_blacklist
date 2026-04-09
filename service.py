@@ -25,6 +25,14 @@ class BlacklistService:
         # 状态
         self.last_sync: Optional[datetime] = None
         self.sync_task: Optional[asyncio.Task] = None
+        
+        # 查询限流
+        self.last_query_time: Optional[datetime] = None
+        self.query_cooldown = 5  # 查询冷却时间（秒）
+        
+        # 查询缓存（短期缓存，避免重复查询API）
+        self.query_cache: Dict[str, tuple] = {}  # key: "type_id", value: (result, timestamp)
+        self.query_cache_ttl = 300  # 缓存有效期（秒）5分钟
     
     async def initialize(self):
         """初始化服务"""
@@ -132,6 +140,59 @@ class BlacklistService:
             
         except Exception as e:
             self.logger.error(f"Sync exception: {e}")
+    
+    def can_query_api(self) -> bool:
+        """检查是否可以查询API（限流检查）"""
+        if not self.last_query_time:
+            return True
+        
+        time_since_last_query = datetime.now() - self.last_query_time
+        if time_since_last_query.total_seconds() < self.query_cooldown:
+            self.logger.debug(f"查询限流中，上次查询于 {self.last_query_time.strftime('%H:%M:%S')}，{int(self.query_cooldown - time_since_last_query.total_seconds())}秒后可查询")
+            return False
+        
+        return True
+    
+    def update_query_time(self):
+        """更新查询时间"""
+        self.last_query_time = datetime.now()
+    
+    def get_cached_query(self, target_id: str, query_type: str) -> Optional[dict]:
+        """获取缓存的查询结果"""
+        cache_key = f"{query_type}_{target_id}"
+        if cache_key in self.query_cache:
+            result, timestamp = self.query_cache[cache_key]
+            # 检查缓存是否过期
+            if (datetime.now() - timestamp).total_seconds() < self.query_cache_ttl:
+                self.logger.debug(f"使用缓存查询结果: {cache_key}")
+                return result
+            else:
+                # 缓存过期，删除
+                del self.query_cache[cache_key]
+        return None
+    
+    def set_cached_query(self, target_id: str, query_type: str, result: dict):
+        """设置查询缓存"""
+        cache_key = f"{query_type}_{target_id}"
+        self.query_cache[cache_key] = (result, datetime.now())
+        self.logger.debug(f"缓存查询结果: {cache_key}")
+        
+        # 清理过期缓存（简单实现，每次设置时检查）
+        self._clean_expired_cache()
+    
+    def _clean_expired_cache(self):
+        """清理过期缓存"""
+        now = datetime.now()
+        expired_keys = []
+        for key, (_, timestamp) in self.query_cache.items():
+            if (now - timestamp).total_seconds() >= self.query_cache_ttl:
+                expired_keys.append(key)
+        
+        for key in expired_keys:
+            del self.query_cache[key]
+        
+        if expired_keys:
+            self.logger.debug(f"清理了 {len(expired_keys)} 个过期缓存")
     
     def is_user_blacklisted(self, user_id: str) -> bool:
         """检查用户是否在黑名单中"""
