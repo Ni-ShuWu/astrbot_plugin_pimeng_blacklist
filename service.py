@@ -60,10 +60,23 @@ class BlacklistService:
             return
         
         try:
+            if self.api.bot_token:
+                token_preview = self.api.bot_token[:8] + "..." if len(self.api.bot_token) > 8 else self.api.bot_token
+                self.logger.debug(f"开始同步，使用Token: {token_preview}")
+            else:
+                self.logger.warning("未配置Bot Token，跳过同步")
+                return
             result = await self.api.get_blacklist()
             
             if not result.get("success"):
-                self.logger.error(f"Sync failed: {result.get('message', 'Unknown')}")
+                error_msg = result.get('message', 'Unknown')
+                self.logger.error(f"Sync failed: {error_msg}")
+                
+                # 根据错误类型提供建议
+                if "401" in error_msg:
+                    self.logger.warning("认证失败 (401): 请检查Bot Token是否正确")
+                elif "403" in error_msg:
+                    self.logger.warning("权限不足 (403): Token可能已过期或无权访问")
                 return
             
             remote_list = result.get("data", {}).get("blacklist", [])

@@ -70,7 +70,7 @@ class PimengAPI:
         conn = http.client.HTTPSConnection(self.host, timeout=self.request_timeout)
         try:
             headers = {
-                "Authorization": self.bot_token,
+                "Authorization": self.bot_token if self.bot_token else "",
                 "User-Agent": "PimengBlacklist/2.7.0",
                 "Accept": "application/json",
             }
@@ -96,9 +96,20 @@ class PimengAPI:
                         api_response["success"] = True
                     return api_response
                 except json.JSONDecodeError:
-                    return {"success": False, "message": f"JSON解析错误"}
+                    return {"success": False, "message": f"JSON解析错误: {response_data[:100]}"}
             else:
-                return {"success": False, "message": f"HTTP {res.status}"}
+                # 添加详细的错误信息
+                error_msg = f"HTTP {res.status}"
+                if response_data:
+                    try:
+                        error_data = json.loads(response_data)
+                        if "message" in error_data:
+                            error_msg = f"HTTP {res.status}: {error_data['message']}"
+                        elif "error" in error_data:
+                            error_msg = f"HTTP {res.status}: {error_data['error']}"
+                    except:
+                        error_msg = f"HTTP {res.status}: {response_data[:200]}"
+                return {"success": False, "message": error_msg}
                 
         except Exception as e:
             return {"success": False, "message": str(e)}
