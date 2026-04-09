@@ -126,6 +126,7 @@ pimeng_blacklist:
 
 ## 版本历史
 
+- v2.8.0: 添加同步冷却时间机制（1分钟），强制同步命令忽略冷却时间，修复API认证格式问题
 - v2.7.0: 代码重构，将功能拆分为模块化架构（api.py、cache.py、service.py、handler.py），修复API路径解析和返回结构问题，增强安全性和稳定性
 - v2.6.0: 冗余代码优化，拿GPT跑了一下发现太那啥就改了（，另外版本要求上提至4.15.0
 - v2.5.0: 区分用户和群组黑名单，用户黑名单仅拦截，群组黑名单仅自动退群
@@ -140,4 +141,9 @@ pimeng_blacklist:
 
 - **这份代码已经越过“能用”的阶段，正在迈向“只能作者本人维护”的阶段**
 - 还有，**仅支持onebot协议的napcat**和**QQ官方API**
+- 另外，紧急更新了2.8.0版本，防止API刷太多导致IP被封
+> **[2026-04-09 10:10:25.395] [Plug] [WARN] [v4.22.0] [astrbot_plugin_pimeng_blacklist.api:63]: API request failed, retrying: HTTP 403: IP 被暂时封禁，请稍后再试
+[2026-04-09 10:10:26.689] [Plug] [ERRO] [v4.22.0] [astrbot_plugin_pimeng_blacklist.service:73]: Sync failed: HTTP 403: IP 被暂时封禁，请稍后再试
+[2026-04-09 10:10:26.689] [Plug] [WARN] [v4.22.0] [astrbot_plugin_pimeng_blacklist.service:79]: 权限不足 (403): Token可能已过期或无权访问
+[2026-04-09 10:10:26.689] [Plug] [INFO] [astrbot_plugin_pimeng_blacklist.service:34]: BlacklistService initialized | Users: 0 | Groups: 0 | Sync: 5min**（艺术来源于生活.png，被打）
 

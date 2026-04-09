@@ -54,10 +54,21 @@ class BlacklistService:
                 self.logger.error(f"Scheduled sync error: {e}")
                 await asyncio.sleep(60)
     
-    async def sync_blacklist(self):
-        """同步云黑库"""
+    async def sync_blacklist(self, force: bool = False):
+        """同步云黑库
+        
+        Args:
+            force: 是否强制同步，忽略冷却时间
+        """
         if not self.api.bot_token:
             return
+        
+        # 检查冷却时间（1分钟）
+        if not force and self.last_sync:
+            time_since_last_sync = datetime.now() - self.last_sync
+            if time_since_last_sync.total_seconds() < 60:
+                self.logger.debug(f"同步冷却中，上次同步于 {self.last_sync.strftime('%H:%M:%S')}，{int(60 - time_since_last_sync.total_seconds())}秒后可同步")
+                return
         
         try:
             if self.api.bot_token:

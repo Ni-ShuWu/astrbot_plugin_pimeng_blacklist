@@ -11,7 +11,7 @@ from .cache import BlacklistCache
 from .service import BlacklistService
 from .handler import EventHandler
 
-__version__ = "2.7.0"
+__version__ = "2.8.0"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
@@ -115,9 +115,9 @@ class PimengBlacklistPlugin(Star):
     @filter.command("bl_sync")
     @require_op
     async def cmd_sync(self, event: AstrMessageEvent):
-        """强制同步"""
-        yield event.plain_result("🔄 正在同步云黑库...")
-        await self.service.sync_blacklist()
+        """强制同步（忽略冷却时间）"""
+        yield event.plain_result("🔄 正在强制同步云黑库...")
+        await self.service.sync_blacklist(force=True)
         yield event.plain_result(
             f"✅ 同步完成\n"
             f"👤 用户: {len(self.service.user_blacklist)}\n"
