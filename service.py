@@ -28,11 +28,14 @@ class BlacklistService:
         
         # 查询限流（按用户限流，避免全局限流导致的"互相抢限流"问题）
         self.user_query_times: Dict[str, datetime] = {}  # key: user_id, value: last_query_time
+        self.global_last_query_time: Optional[datetime] = None  # 全局限流时间戳
         self.query_cooldown = 5  # 查询冷却时间（秒）
+        self.max_query_times_size = 1000  # 最大用户限流记录数
         
         # 查询缓存（短期缓存，避免重复查询API）
         self.query_cache: Dict[str, tuple] = {}  # key: "type_id", value: (result, timestamp)
         self.query_cache_ttl = 300  # 缓存有效期（秒）5分钟
+        self.max_cache_size = 1000  # 最大缓存容量
         
         # 同步锁，防止并发同步
         self._sync_lock = asyncio.Lock()
@@ -182,22 +185,19 @@ class BlacklistService:
         """检查是否可以查询API（限流检查）
         
         Args:
-            user_id: 用户ID，如果为None则使用全局限流（向后兼容）
+            user_id: 用户ID，如果为None则使用全局限流
         
         Returns:
             bool: 是否可以查询
         """
-        # 如果没有提供user_id，使用全局限流（向后兼容）
+        # 如果没有提供user_id，使用全局限流
         if user_id is None:
-            # 检查是否有任何用户最近查询过（简单的全局限流）
-            if not self.user_query_times:
+            if self.global_last_query_time is None:
                 return True
             
-            # 找到最近的一次查询
-            last_query_time = max(self.user_query_times.values())
-            time_since_last_query = datetime.now() - last_query_time
+            time_since_last_query = datetime.now() - self.global_last_query_time
             if time_since_last_query.total_seconds() < self.query_cooldown:
-                self.logger.debug(f"全局查询限流中，上次查询于 {last_query_time.strftime('%H:%M:%S')}，{int(self.query_cooldown - time_since_last_query.total_seconds())}秒后可查询")
+                self.logger.debug(f"全局查询限流中，上次查询于 {self.global_last_query_time.strftime('%H:%M:%S')}，{int(self.query_cooldown - time_since_last_query.total_seconds())}秒后可查询")
                 return False
             return True
         
@@ -217,15 +217,28 @@ class BlacklistService:
         """更新查询时间
         
         Args:
-            user_id: 用户ID，如果为None则更新全局限流时间（向后兼容）
+            user_id: 用户ID，如果为None则更新全局限流时间
         """
         if user_id is None:
-            # 如果没有提供user_id，更新所有用户的查询时间（模拟全局限流）
-            current_time = datetime.now()
-            for uid in list(self.user_query_times.keys()):
-                self.user_query_times[uid] = current_time
+            self.global_last_query_time = datetime.now()
         else:
             self.user_query_times[user_id] = datetime.now()
+            if len(self.user_query_times) > self.max_query_times_size:
+                self._cleanup_old_query_times()
+    
+    def _cleanup_old_query_times(self):
+        """清理过期的用户查询时间记录"""
+        now = datetime.now()
+        expired_users = []
+        for uid, last_time in self.user_query_times.items():
+            if (now - last_time).total_seconds() >= self.query_cooldown * 10:
+                expired_users.append(uid)
+        
+        for uid in expired_users:
+            del self.user_query_times[uid]
+        
+        if expired_users:
+            self.logger.debug(f"清理了 {len(expired_users)} 个过期用户查询记录")
     
     def get_cached_query(self, target_id: str, query_type: str) -> Optional[dict]:
         """获取缓存的查询结果"""
@@ -244,16 +257,21 @@ class BlacklistService:
     def set_cached_query(self, target_id: str, query_type: str, result: dict):
         """设置查询缓存"""
         cache_key = f"{query_type}_{target_id}"
+        
+        # 检查缓存是否已满，如果是则先清理过期缓存
+        if len(self.query_cache) >= self.max_cache_size:
+            self._clean_expired_cache()
+            
+            # 如果清理后仍然满了，随机删除一些旧缓存
+            if len(self.query_cache) >= self.max_cache_size:
+                excess = len(self.query_cache) - self.max_cache_size + 100
+                keys_to_remove = list(self.query_cache.keys())[:excess]
+                for key in keys_to_remove:
+                    del self.query_cache[key]
+                self.logger.warning(f"缓存已满，删除了 {len(keys_to_remove)} 条缓存记录")
+        
         self.query_cache[cache_key] = (result, datetime.now())
         self.logger.debug(f"缓存查询结果: {cache_key}")
-        
-        # 优化：概率性清理过期缓存，而不是每次设置时都清理
-        # 当缓存大小较大时增加清理概率
-        import random
-        cache_size = len(self.query_cache)
-        cleanup_probability = min(0.1, cache_size / 1000)  # 最大10%概率
-        if random.random() < cleanup_probability:
-            self._clean_expired_cache()
     
     def _clean_expired_cache(self):
         """清理过期缓存"""

@@ -10,13 +10,6 @@ from .service import BlacklistService
 from .cache import BlacklistCache
 
 
-# 尝试导入 AiocqhttpMessageEvent 用于权限检查
-try:
-    from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
-except ImportError:
-    AiocqhttpMessageEvent = None
-
-
 class EventHandler:
     """事件处理器"""
     
@@ -171,46 +164,100 @@ class EventHandler:
         group_id = str(event.get_group_id())
         message_str = getattr(event, 'message_str', '') or ''
         
-        # 首先尝试解析消息，提取加入的成员ID
-        # 系统消息格式通常类似："用户123456通过分享加入了群聊"
-        # 或者："用户123456邀请用户789012加入了群聊"
-        
         # 检查是否为系统通知消息
         is_system_notification = False
         system_patterns = ["邀请", "加入了群聊", "通过扫描", "通过分享", "通过搜索", "加入了群", "加入群聊"]
         if any(pattern in message_str for pattern in system_patterns):
-            # 进一步检查：系统通知通常不包含@消息或复杂格式
             if '@' not in message_str and len(message_str) < 150:
                 is_system_notification = True
         
         if not is_system_notification:
-            # 不是系统通知消息，不处理
             return False
         
-        # 尝试从消息中提取用户ID
-        # 常见格式："用户123456加入了群聊" 或 "123456加入了群聊"
+        # 提取用户ID
+        joined_user_id = self._extract_user_id_from_message(message_str)
         
-        # 尝试匹配QQ号（5-10位数字）
-        qq_pattern = r'(\d{5,10})'
-        matches = re.findall(qq_pattern, message_str)
-        
-        if not matches:
-            # 无法提取用户ID，可能是Bot加入或其他格式
+        if not joined_user_id:
             self.logger.debug(f"无法从消息中提取用户ID: {message_str}")
             return False
         
-        # 假设第一个匹配的数字是加入的用户ID
-        joined_user_id = matches[0]
-        
-        # 检查是否为Bot自己加入（消息中包含Bot相关的关键词）
+        # 检查是否为Bot自己加入
         is_bot_join = any(kw in message_str.lower() for kw in self.BOT_JOIN_KEYWORDS)
         
         if is_bot_join:
-            # Bot加入群聊事件
             return await self._handle_bot_join(group_id, context)
         else:
-            # 普通成员加入群聊事件
             return await self._handle_member_join(group_id, joined_user_id, event, context)
+    
+    def _extract_user_id_from_message(self, message_str: str) -> Optional[str]:
+        """从入群消息中提取用户ID
+        
+        改进的提取逻辑：
+        1. 优先匹配"用户123456"格式
+        2. 验证提取的数字是否在合理范围内
+        3. 避免误匹配消息中其他位置的数字
+        """
+        if not message_str:
+            return None
+        
+        # 模式1: "用户123456" 或 "用户 123456" 格式（最可靠）
+        pattern1 = r'用户\s*(\d{5,10})'
+        match1 = re.search(pattern1, message_str)
+        if match1:
+            qq = match1.group(1)
+            if self._is_valid_qq_number(qq):
+                return qq
+        
+        # 模式2: 匹配消息开头的数字（通常是加入的用户）
+        # 但需要排除一些特殊情况
+        pattern2 = r'^(\d{5,10})'
+        match2 = re.match(pattern2, message_str)
+        if match2:
+            qq = match2.group(1)
+            if self._is_valid_qq_number(qq):
+                return qq
+        
+        # 模式3: 尝试在"加入了"之前提取数字
+        pattern3 = r'(\d{5,10})\s*(?:加入了|邀请)'
+        match3 = re.search(pattern3, message_str)
+        if match3:
+            qq = match3.group(1)
+            if self._is_valid_qq_number(qq):
+                return qq
+        
+        # 回退：使用原来的方式，但添加验证
+        qq_pattern = r'(\d{5,10})'
+        matches = re.findall(qq_pattern, message_str)
+        for qq in matches:
+            if self._is_valid_qq_number(qq):
+                return qq
+        
+        return None
+    
+    def _is_valid_qq_number(self, qq: str) -> bool:
+        """验证QQ号是否有效
+        
+        QQ号特点：
+        1. 5-10位数字
+        2. 通常以1开头（手机号段）
+        3. 不能以0开头
+        4. 最小QQ号约为10000
+        """
+        if not qq or len(qq) < 5 or len(qq) > 10:
+            return False
+        
+        # 转换为整数检查范围
+        try:
+            qq_int = int(qq)
+            # QQ号最小约为10000（早期QQ号），最大约9位数（当前分配范围）
+            if qq_int < 10000:
+                return False
+            # 排除明显不合理的QQ号范围
+            if qq_int > 999999999:
+                return False
+            return True
+        except ValueError:
+            return False
     
     async def _handle_bot_join(self, group_id: str, context) -> bool:
         """处理Bot加入群聊事件"""
@@ -287,76 +334,65 @@ class EventHandler:
         检查逻辑：
         1. Bot 必须是管理员或群主
         2. 对方不能是管理员或群主
+        
+        改进：不再硬编码检查aiocqhttp平台，而是尝试检测踢人能力
         """
-        # 检查平台是否为 aiocqhttp
-        if event.get_platform_name() != "aiocqhttp":
-            # 非 aiocqhttp 平台，默认不能踢出（安全第一）
-            self.logger.warning(f"非 aiocqhttp 平台，无法踢人 | Platform: {event.get_platform_name()}")
+        # 尝试获取 bot 实例
+        bot = getattr(event, 'bot', None)
+        if not bot:
+            self.logger.warning(f"无法获取 Bot 实例")
             return False
         
-        # 检查是否为 AiocqhttpMessageEvent 类型
-        if AiocqhttpMessageEvent is None or not isinstance(event, AiocqhttpMessageEvent):
-            # 类型不匹配，默认不能踢出（安全第一）
-            self.logger.warning(f"非 AiocqhttpMessageEvent 类型，无法踢人 | Type: {type(event)}")
+        # 检查是否支持 get_group_member_info API
+        if not hasattr(bot, 'api') or not hasattr(bot.api, 'call_action'):
+            self.logger.warning(f"Bot 不支持 API 调用")
             return False
         
+        # 获取 Bot ID
+        bot_id = None
+        if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'self_id'):
+            bot_id = event.message_obj.self_id
+        
+        if not bot_id:
+            bot_id = getattr(event, 'self_id', None)
+        
+        if not bot_id and hasattr(bot, 'self_id'):
+            bot_id = getattr(bot, 'self_id', None)
+        
+        if not bot_id:
+            self.logger.warning(f"无法获取 Bot ID | Group: {group_id}")
+            return False
+        
+        # 获取 Bot 和对方的群成员信息
         try:
-            client = event.bot
-            # 修复：从 event.message_obj.self_id 获取 Bot ID
-            bot_id = None
-            
-            # 优先从 event.message_obj.self_id 获取
-            if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'self_id'):
-                bot_id = event.message_obj.self_id
-            
-            # 如果还是为空，尝试从 event.self_id 获取（兼容旧版本）
-            if not bot_id:
-                bot_id = getattr(event, 'self_id', None)
-            
-            # 如果还是为空，尝试从 event.bot.self_id 获取
-            if not bot_id and hasattr(event, 'bot'):
-                bot_id = getattr(event.bot, 'self_id', None)
-            
-            # 如果 bot_id 为空，直接返回 False
-            if not bot_id:
-                self.logger.warning(f"无法获取 Bot ID | Group: {group_id} | Event type: {type(event)}")
-                return False
-            
-            # 获取 Bot 和对方的群成员信息
-            bot_info = await client.api.call_action(
+            bot_info = await bot.api.call_action(
                 'get_group_member_info',
                 user_id=int(bot_id),
                 group_id=int(group_id),
                 no_cache=True
             )
-            user_info = await client.api.call_action(
+            user_info = await bot.api.call_action(
                 'get_group_member_info',
                 user_id=int(user_id),
                 group_id=int(group_id),
                 no_cache=True
             )
-            
-            bot_role = bot_info.get("role", "member")
-            user_role = user_info.get("role", "member")
-            
-            # Bot 必须是管理员或群主
-            if bot_role not in ["admin", "owner"]:
-                self.logger.warning(f"Bot 不是管理员，无法踢人 | Bot: {bot_id} | Role: {bot_role} | Group: {group_id}")
-                return False
-            
-            # 对方不能是管理员或群主
-            if user_role in ["admin", "owner"]:
-                self.logger.warning(f"对方是管理员/群主，无法踢出 | User: {user_id} | Role: {user_role} | Group: {group_id}")
-                return False
-            
-            # 可以踢出
-            return True
-            
-        except (ValueError, TypeError) as e:
-            # 参数转换错误
-            self.logger.warning(f"参数转换错误：{str(e)} | Group: {group_id} | User: {user_id}")
-            return False
         except Exception as e:
-            # 其他异常（网络错误、API错误等）
             self.logger.warning(f"群成员信息获取失败：{type(e).__name__}: {str(e)} | Group: {group_id} | User: {user_id}")
             return False
+        
+        bot_role = bot_info.get("role", "member")
+        user_role = user_info.get("role", "member")
+        
+        # Bot 必须是管理员或群主
+        if bot_role not in ["admin", "owner"]:
+            self.logger.warning(f"Bot 不是管理员，无法踢人 | Bot: {bot_id} | Role: {bot_role} | Group: {group_id}")
+            return False
+        
+        # 对方不能是管理员或群主
+        if user_role in ["admin", "owner"]:
+            self.logger.warning(f"对方是管理员/群主，无法踢出 | User: {user_id} | Role: {user_role} | Group: {group_id}")
+            return False
+        
+        # 可以踢出
+        return True
