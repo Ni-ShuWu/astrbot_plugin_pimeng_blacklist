@@ -42,9 +42,12 @@ class BlacklistService:
     
     async def initialize(self):
         """初始化服务"""
-        await self.sync_blacklist()
+        try:
+            await self.sync_blacklist()
+        except Exception as e:
+            self.logger.warning(f"首次同步失败，定时任务仍会继续: {e}")
+        
         self.sync_task = asyncio.create_task(self._scheduled_sync())
-        # 启动缓存清理任务（每5分钟清理一次过期缓存）
         self.cache_cleanup_task = asyncio.create_task(self._scheduled_cache_cleanup())
         
         self.logger.info(f"BlacklistService initialized | Users: {len(self.user_blacklist)} | Groups: {len(self.group_blacklist)} | Sync: {self.sync_interval//60}min")
@@ -104,20 +107,24 @@ class BlacklistService:
             return await self._sync_blacklist_internal(force)
     
     async def _sync_blacklist_internal(self, force: bool = False) -> bool:
-        """内部同步方法（已加锁）"""
+        """内部同步方法（已加锁）
+        
+        改进：采用"先建后换"策略，失败时回滚保留旧数据
+        """
         if not self.api.bot_token:
             return False
         
-        # 检查冷却时间（1分钟）
         if not force and self.last_sync:
             time_since_last_sync = datetime.now() - self.last_sync
             if time_since_last_sync.total_seconds() < 60:
                 self.logger.debug(f"同步冷却中，上次同步于 {self.last_sync.strftime('%H:%M:%S')}，{int(60 - time_since_last_sync.total_seconds())}秒后可同步")
                 return False
         
+        old_user_blacklist = self.user_blacklist.copy()
+        old_group_blacklist = self.group_blacklist.copy()
+        
         try:
             if self.api.bot_token:
-                # 只记录Token是否存在，不输出任何片段（安全考虑）
                 token_length = len(self.api.bot_token)
                 self.logger.debug(f"开始同步，Token已配置（长度: {token_length}）")
             else:
@@ -129,7 +136,6 @@ class BlacklistService:
                 error_msg = result.get('message', 'Unknown')
                 self.logger.error(f"Sync failed: {error_msg}")
                 
-                # 根据错误类型提供建议
                 if "401" in error_msg:
                     self.logger.warning("认证失败 (401): 请检查Bot Token是否正确")
                 elif "403" in error_msg:
@@ -144,8 +150,8 @@ class BlacklistService:
             old_users = len(self.user_blacklist)
             old_groups = len(self.group_blacklist)
             
-            self.user_blacklist.clear()
-            self.group_blacklist.clear()
+            new_user_blacklist: Dict[str, dict] = {}
+            new_group_blacklist: Dict[str, dict] = {}
             
             for item in remote_list:
                 user_id = str(item.get("user_id", ""))
@@ -160,15 +166,16 @@ class BlacklistService:
                 }
                 
                 if item.get("user_type") == "group":
-                    self.group_blacklist[user_id] = data
+                    new_group_blacklist[user_id] = data
                 else:
-                    self.user_blacklist[user_id] = data
+                    new_user_blacklist[user_id] = data
             
-            # 清理过期提醒记录
+            self.user_blacklist = new_user_blacklist
+            self.group_blacklist = new_group_blacklist
+            
             current_users = set(self.user_blacklist.keys())
             self.cache.clean_expired_records(current_users)
             
-            # 清理 quit_groups 中已经不存在的群组
             if hasattr(self, 'handler') and hasattr(self.handler, 'quit_groups'):
                 current_groups = set(self.group_blacklist.keys())
                 self.handler.quit_groups = {g for g in self.handler.quit_groups if g in current_groups}
@@ -178,7 +185,10 @@ class BlacklistService:
             return True
             
         except Exception as e:
-            self.logger.error(f"Sync exception: {e}")
+            self.logger.error(f"Sync exception: {e}, 正在回滚...")
+            self.user_blacklist = old_user_blacklist
+            self.group_blacklist = old_group_blacklist
+            self.logger.info(f"Sync rolled back | Users: {len(self.user_blacklist)}, Groups: {len(self.group_blacklist)}")
             return False
     
     def can_query_api(self, user_id: str = None) -> bool:

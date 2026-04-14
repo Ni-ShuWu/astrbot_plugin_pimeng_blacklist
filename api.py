@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import re
 import urllib.parse
 import aiohttp
 import ssl
+from typing import Optional
 
 
 class PimengAPI:
@@ -16,11 +18,29 @@ class PimengAPI:
         self.request_timeout = request_timeout
         self.logger = logger
         
-        # 解析api_base获取scheme、主机名和路径
         parsed = urllib.parse.urlparse(self.api_base)
         self.scheme = parsed.scheme or "https"
         self.host = parsed.netloc or "cloudblack-api.07210700.xyz"
         self.base_path = parsed.path or ""
+        
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._ssl_context: Optional[ssl.SSLContext] = None
+        
+        if self.scheme == "https":
+            self._ssl_context = ssl.create_default_context()
+    
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """获取或创建aiohttp会话（复用连接）"""
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.request_timeout)
+            self._session = aiohttp.ClientSession(timeout=timeout)
+        return self._session
+    
+    async def terminate(self):
+        """关闭aiohttp会话"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
     
     async def check_blacklist(self, user_id: str, user_type: str = "user") -> dict:
         """检查用户/群组是否在黑名单中"""
@@ -52,9 +72,8 @@ class PimengAPI:
     
     async def _make_request(self, method: str, endpoint: str, data: dict = None) -> dict:
         """发送API请求（带智能重试）"""
-        # 智能重试逻辑
         max_retries = 2
-        retry_delay = 1  # 秒
+        retry_delay = 1
         
         for attempt in range(max_retries):
             result = await self._make_async_request(method, endpoint, data)
@@ -63,16 +82,13 @@ class PimengAPI:
                 return result
             
             error_message = result.get('message', '')
-            
-            # 检查是否需要重试（只重试可恢复的错误）
             should_retry = self._should_retry(error_message, attempt, max_retries)
             
             if not should_retry:
                 return result
             
-            # 记录重试日志
             self.logger.warning(f"API请求失败，正在重试 ({attempt + 1}/{max_retries}): {error_message}")
-            await asyncio.sleep(retry_delay * (attempt + 1))  # 指数退避
+            await asyncio.sleep(retry_delay * (attempt + 1))
         
         return result
     
@@ -90,37 +106,29 @@ class PimengAPI:
         - 资源不存在（404）
         """
         if attempt >= max_retries - 1:
-            return False  # 已达到最大重试次数
+            return False
         
-        # 检查网络错误
         network_errors = ["网络错误", "请求超时", "连接错误", "Timeout", "Connection"]
         if any(err in error_message for err in network_errors):
             return True
         
-        # 检查HTTP状态码
-        import re
         status_match = re.search(r'HTTP (\d{3})', error_message)
         if status_match:
             status_code = int(status_match.group(1))
             
-            # 5xx服务器错误应该重试
             if 500 <= status_code < 600:
                 return True
             
-            # 429 Too Many Requests 应该重试
             if status_code == 429:
                 return True
             
-            # 其他4xx错误通常不应该重试
             if 400 <= status_code < 500:
                 return False
         
-        # 默认不重试
         return False
     
     async def _make_async_request(self, method: str, endpoint: str, data: dict = None) -> dict:
-        """异步HTTP请求（使用aiohttp）"""
-        # 构建完整的URL
+        """异步HTTP请求（使用复用的aiohttp会话）"""
         base_path = self.base_path.rstrip("/")
         endpoint = endpoint.lstrip("/")
         path = f"/{base_path}/{endpoint}" if base_path else f"/{endpoint}"
@@ -132,31 +140,29 @@ class PimengAPI:
             "Accept": "application/json",
         }
         
-        # 创建SSL上下文（如果是HTTPS）
-        ssl_context = None
-        if self.scheme == "https":
-            ssl_context = ssl.create_default_context()
-        
-        timeout = aiohttp.ClientTimeout(total=self.request_timeout)
-        
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                if method.upper() == "GET":
-                    async with session.get(url, headers=headers, ssl=ssl_context) as response:
-                        return await self._handle_response(response)
-                else:
-                    headers["Content-Type"] = "application/json"
-                    json_data = json.dumps(data) if data else None
-                    async with session.request(method, url, headers=headers, data=json_data, ssl=ssl_context) as response:
-                        return await self._handle_response(response)
+            session = await self._get_session()
+            
+            if method.upper() == "GET":
+                response = await session.get(url, headers=headers, ssl=self._ssl_context)
+                try:
+                    return await self._handle_response(response)
+                finally:
+                    response.close()
+            else:
+                headers["Content-Type"] = "application/json"
+                json_data = json.dumps(data) if data else None
+                response = await session.request(method, url, headers=headers, data=json_data, ssl=self._ssl_context)
+                try:
+                    return await self._handle_response(response)
+                finally:
+                    response.close()
                         
         except asyncio.TimeoutError:
             return {"success": False, "message": f"请求超时 ({self.request_timeout}秒)"}
         except aiohttp.ClientError as e:
-            # 客户端错误（网络错误、连接错误等）
             return {"success": False, "message": f"网络错误: {str(e)}"}
         except Exception as e:
-            # 其他未知异常
             self.logger.error(f"API请求未知异常: {type(e).__name__}: {str(e)}")
             return {"success": False, "message": "内部错误，请查看日志"}
     
@@ -168,14 +174,12 @@ class PimengAPI:
             if response.status == 200:
                 try:
                     api_response = json.loads(response_data)
-                    # 确保返回结构一致
                     if "success" not in api_response:
                         api_response["success"] = True
                     return api_response
                 except json.JSONDecodeError:
                     return {"success": False, "message": f"JSON解析错误: {response_data[:100]}"}
             else:
-                # 添加详细的错误信息
                 error_msg = f"HTTP {response.status}"
                 if response_data:
                     try:

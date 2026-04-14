@@ -53,6 +53,8 @@ class PimengBlacklistPlugin(Star):
         super().__init__(context)
         self.logger = logger
         
+        self._background_tasks: set = set()
+        
         # 配置读取
         api_base = config.get("api_base", "https://cloudblack-api.07210700.xyz")
         bot_token = config.get("bot_token", "")
@@ -63,9 +65,8 @@ class PimengBlacklistPlugin(Star):
         # 初始化各个模块
         self.api = PimengAPI(api_base, bot_token, request_timeout, self.logger)
         self.cache = BlacklistCache()
-        self.handler = EventHandler(None, self.cache, enable_auto_kick, self.logger)
-        self.service = BlacklistService(self.api, self.cache, sync_interval, self.logger, self.handler)
-        self.handler.service = self.service
+        self.service = BlacklistService(self.api, self.cache, sync_interval, self.logger)
+        self.handler = EventHandler(self.service, self.cache, enable_auto_kick, self.logger)
     
     async def initialize(self):
         """初始化"""
@@ -76,7 +77,15 @@ class PimengBlacklistPlugin(Star):
     
     async def terminate(self):
         """清理资源"""
+        for task in self._background_tasks:
+            if not task.done():
+                task.cancel()
+        
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        
         await self.service.terminate()
+        await self.api.terminate()
     
     async def _safe_sync_blacklist(self):
         """安全地触发同步（包装异步任务，捕获异常）"""
@@ -85,20 +94,20 @@ class PimengBlacklistPlugin(Star):
         except Exception as e:
             self.logger.error(f"Background sync failed: {e}")
     
-    async def _query_blacklist(self, event: AstrMessageEvent, target_id: str, query_type: str) -> str:
+    async def _query_blacklist(self, target_id: str, query_type: str, check_rate_limit: bool = True, query_user_id: str = None) -> str:
         """查询黑名单状态（通用方法）
         
         Args:
-            event: 事件对象
             target_id: 目标ID
             query_type: 查询类型（"user" 或 "group"）
+            check_rate_limit: 是否检查限流
+            query_user_id: 查询用户的ID
             
         Returns:
             str: 查询结果消息
         """
         type_name = "群组" if query_type == "group" else "用户"
         
-        # 本地检查
         if query_type == "group":
             is_blacklisted = self.service.is_group_blacklisted(target_id)
             data = self.service.get_group_data(target_id) if is_blacklisted else None
@@ -118,7 +127,6 @@ class PimengBlacklistPlugin(Star):
                 f"添加者：{data.get('added_by', '未知') if data else '未知'}"
             )
         
-        # 首先检查查询缓存
         cached_result = self.service.get_cached_query(target_id, query_type)
         if cached_result:
             if cached_result.get("in_blacklist"):
@@ -132,15 +140,16 @@ class PimengBlacklistPlugin(Star):
             else:
                 return f"✅ {type_name} {target_id} 未被拉黑（缓存）"
         
-        # 检查查询限流（按发起查询的用户限流）
-        query_user_id = str(event.get_sender_id())
-        if not self.service.can_query_api(query_user_id):
-            return f"⏳ 查询限流中，请稍后再试"
+        if check_rate_limit and query_user_id:
+            if not self.service.can_query_api(query_user_id):
+                return f"⏳ 查询限流中，请稍后再试"
         
-        # API 实时检查
         result = await self.api.check_blacklist(target_id, query_type)
-        self.service.update_query_time(query_user_id)  # 更新查询时间
-        self.service.set_cached_query(target_id, query_type, result)  # 缓存结果
+        
+        if check_rate_limit and query_user_id:
+            self.service.update_query_time(query_user_id)
+        
+        self.service.set_cached_query(target_id, query_type, result)
         
         # 先检查 API 调用是否成功
         if not result.get("success"):
@@ -164,7 +173,9 @@ class PimengBlacklistPlugin(Star):
             # 如果不在本地缓存，触发增量同步
             if not is_blacklisted:
                 message += f"\n⚠️ 不在本地缓存，正在同步..."
-                asyncio.create_task(self._safe_sync_blacklist())
+                task = asyncio.create_task(self._safe_sync_blacklist())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             
             return message
         else:
@@ -229,37 +240,37 @@ class PimengBlacklistPlugin(Star):
     @filter.command("bl_check")
     async def cmd_check(self, event: AstrMessageEvent, target: str = None, user_type: str = None):
         """检查黑名单状态 - 不指定类型时同时查询用户和群组"""
-        # 参数处理
         if target is not None:
             target = str(target)
             if not target.isdigit():
                 yield event.plain_result("❌ 参数错误：ID 必须是数字")
                 return
         
-        # 如果没有指定类型，同时查询用户和群组
+        target_id = str(target or event.get_sender_id())
+        
         if user_type is None:
-            target_id = str(target or event.get_sender_id())
             results = []
+            query_user_id = str(event.get_sender_id())
             
-            # 查询用户（使用通用方法）
-            user_result = await self._query_blacklist(event, target_id, "user")
-            results.append(user_result)
+            can_query = self.service.can_query_api(query_user_id)
             
-            # 查询群组（使用通用方法）
-            group_result = await self._query_blacklist(event, target_id, "group")
-            results.append(group_result)
+            user_result = await self._query_blacklist(target_id, "user", check_rate_limit=False)
+            group_result = await self._query_blacklist(target_id, "group", check_rate_limit=False)
             
-            # 返回结果
+            results.append(f"[用户]\n{user_result}")
+            results.append(f"[群组]\n{group_result}")
+            
+            if can_query:
+                self.service.update_query_time(query_user_id)
+            
             yield event.plain_result("\n\n".join(results))
             return
         
-        # 指定了类型，使用通用查询方法
         if user_type not in ("user", "group"):
             yield event.plain_result("❌ 参数错误：user_type 必须是'user'或'group'")
             return
         
-        target_id = str(target or event.get_sender_id())
-        result = await self._query_blacklist(event, target_id, user_type)
+        result = await self._query_blacklist(target_id, user_type, check_rate_limit=True)
         yield event.plain_result(result)
     
     @filter.command("bl_add")
@@ -301,8 +312,9 @@ class PimengBlacklistPlugin(Star):
         result = await self.api.add_to_blacklist(user_id, user_type, reason, level)
         
         if result.get("success"):
-            # 异步触发同步，不阻塞当前命令响应
-            asyncio.create_task(self._safe_sync_blacklist())
+            task = asyncio.create_task(self._safe_sync_blacklist())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
             
             type_name = "用户" if user_type == "user" else "群组"
             yield event.plain_result(
