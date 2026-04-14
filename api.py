@@ -4,8 +4,6 @@ import asyncio
 import http.client
 import json
 import urllib.parse
-from typing import Dict, Optional
-from datetime import datetime
 
 
 class PimengAPI:
@@ -17,8 +15,9 @@ class PimengAPI:
         self.request_timeout = request_timeout
         self.logger = logger
         
-        # 解析api_base获取主机名和路径
+        # 解析api_base获取scheme、主机名和路径
         parsed = urllib.parse.urlparse(self.api_base)
+        self.scheme = parsed.scheme or "https"
         self.host = parsed.netloc or "cloudblack-api.07210700.xyz"
         self.base_path = parsed.path or ""
     
@@ -67,7 +66,12 @@ class PimengAPI:
     
     def _make_sync_request(self, method: str, endpoint: str, data: dict = None) -> dict:
         """同步HTTP请求"""
-        conn = http.client.HTTPSConnection(self.host, timeout=self.request_timeout)
+        # 根据scheme选择HTTP或HTTPS连接
+        if self.scheme == "http":
+            conn = http.client.HTTPConnection(self.host, timeout=self.request_timeout)
+        else:
+            conn = http.client.HTTPSConnection(self.host, timeout=self.request_timeout)
+        
         try:
             headers = {
                 "Authorization": self.bot_token if self.bot_token else "",
@@ -81,8 +85,10 @@ class PimengAPI:
             else:
                 payload = None
             
-            # 构建完整的请求路径
-            full_path = self.base_path + endpoint
+            # 构建完整的请求路径，避免双斜杠
+            base_path = self.base_path.rstrip("/")
+            endpoint = endpoint.lstrip("/")
+            full_path = f"/{base_path}/{endpoint}" if base_path else f"/{endpoint}"
             
             conn.request(method, full_path, payload, headers)
             res = conn.getresponse()
@@ -107,11 +113,19 @@ class PimengAPI:
                             error_msg = f"HTTP {res.status}: {error_data['message']}"
                         elif "error" in error_data:
                             error_msg = f"HTTP {res.status}: {error_data['error']}"
-                    except:
+                    except json.JSONDecodeError:
                         error_msg = f"HTTP {res.status}: {response_data[:200]}"
                 return {"success": False, "message": error_msg}
                 
+        except (http.client.HTTPException, OSError, TimeoutError) as e:
+            # 网络相关异常
+            return {"success": False, "message": f"网络错误: {str(e)}"}
+        except json.JSONDecodeError as e:
+            # JSON解析异常
+            return {"success": False, "message": f"响应解析错误: {str(e)}"}
         except Exception as e:
-            return {"success": False, "message": str(e)}
+            # 其他未知异常，记录日志但不暴露细节
+            self.logger.error(f"API请求未知异常: {type(e).__name__}: {str(e)}")
+            return {"success": False, "message": "内部错误，请查看日志"}
         finally:
             conn.close()

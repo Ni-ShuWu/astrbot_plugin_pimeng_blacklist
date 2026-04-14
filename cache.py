@@ -1,6 +1,6 @@
 """缓存管理模块 - 处理提醒记录"""
 
-from typing import Dict, Set
+from typing import Dict, Set, Optional
 from datetime import datetime
 
 
@@ -16,7 +16,7 @@ class BlacklistCache:
         for user_id in expired:
             self.private_warned.pop(user_id, None)
     
-    def get_private_warn_time(self, user_id: str) -> datetime:
+    def get_private_warn_time(self, user_id: str) -> Optional[datetime]:
         """获取用户的私聊提醒时间"""
         return self.private_warned.get(user_id)
     

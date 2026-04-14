@@ -1,5 +1,6 @@
 """事件处理模块 - 处理消息拦截、踢人权限检查等事件"""
 
+import re
 from datetime import datetime
 from typing import Optional, Set
 
@@ -63,6 +64,9 @@ class EventHandler:
                         self.cache.set_private_warn_time(user_id, now)
                         self.logger.info(f"Private Warn | User: {user_id} | Level: {level}")
                 
+                # 停止事件传播，拦截消息
+                event.stop_event()
+                
                 if should_warn:
                     # 发送提醒
                     return (
@@ -74,8 +78,6 @@ class EventHandler:
                         f"详情与申诉: https://云黑.皮梦.wtf"
                     )
                 
-                # 停止事件传播，拦截消息
-                event.stop_event()
                 return None
         
         # 检查群组黑名单和踢人逻辑
@@ -160,14 +162,58 @@ class EventHandler:
         return None
     
     async def handle_member_join(self, event: AstrMessageEvent, context) -> bool:
-        """处理成员加入群组事件 - 返回True表示处理了事件"""
+        """处理成员加入群组事件 - 返回True表示处理了事件
+        
+        处理两种类型的加入事件：
+        1. Bot加入群聊：检查群组是否在黑名单中，如果是则Bot退群
+        2. 普通成员加入群聊：检查成员是否在黑名单中，如果是且等级≥3，则尝试踢出
+        """
         group_id = str(event.get_group_id())
         message_str = getattr(event, 'message_str', '') or ''
         
-        # 检查是否为Bot加入事件
-        if not any(kw in message_str.lower() for kw in self.BOT_JOIN_KEYWORDS):
+        # 首先尝试解析消息，提取加入的成员ID
+        # 系统消息格式通常类似："用户123456通过分享加入了群聊"
+        # 或者："用户123456邀请用户789012加入了群聊"
+        
+        # 检查是否为系统通知消息
+        is_system_notification = False
+        system_patterns = ["邀请", "加入了群聊", "通过扫描", "通过分享", "通过搜索", "加入了群", "加入群聊"]
+        if any(pattern in message_str for pattern in system_patterns):
+            # 进一步检查：系统通知通常不包含@消息或复杂格式
+            if '@' not in message_str and len(message_str) < 150:
+                is_system_notification = True
+        
+        if not is_system_notification:
+            # 不是系统通知消息，不处理
             return False
         
+        # 尝试从消息中提取用户ID
+        # 常见格式："用户123456加入了群聊" 或 "123456加入了群聊"
+        
+        # 尝试匹配QQ号（5-10位数字）
+        qq_pattern = r'(\d{5,10})'
+        matches = re.findall(qq_pattern, message_str)
+        
+        if not matches:
+            # 无法提取用户ID，可能是Bot加入或其他格式
+            self.logger.debug(f"无法从消息中提取用户ID: {message_str}")
+            return False
+        
+        # 假设第一个匹配的数字是加入的用户ID
+        joined_user_id = matches[0]
+        
+        # 检查是否为Bot自己加入（消息中包含Bot相关的关键词）
+        is_bot_join = any(kw in message_str.lower() for kw in self.BOT_JOIN_KEYWORDS)
+        
+        if is_bot_join:
+            # Bot加入群聊事件
+            return await self._handle_bot_join(group_id, context)
+        else:
+            # 普通成员加入群聊事件
+            return await self._handle_member_join(group_id, joined_user_id, event, context)
+    
+    async def _handle_bot_join(self, group_id: str, context) -> bool:
+        """处理Bot加入群聊事件"""
         # 检查群组是否在黑名单中
         if not self.service.is_group_blacklisted(group_id):
             return False
@@ -195,6 +241,42 @@ class EventHandler:
             self.logger.error(f"Quit group failed | Group: {group_id} | Error: {e}")
             # 退群失败，从集合中移除，允许重试
             self.quit_groups.discard(group_id)
+        
+        return False
+    
+    async def _handle_member_join(self, group_id: str, user_id: str, event: AstrMessageEvent, context) -> bool:
+        """处理普通成员加入群聊事件"""
+        # 检查是否启用自动踢人
+        if not self.enable_auto_kick:
+            return False
+        
+        # 检查用户是否在黑名单中
+        if not self.service.is_user_blacklisted(user_id):
+            return False
+        
+        user_data = self.service.get_user_data(user_id)
+        level = user_data.get("level", 1) if user_data else 1
+        
+        # 只踢出等级≥3的用户
+        if level < 3:
+            self.logger.debug(f"User level too low, not kicking | User: {user_id} | Level: {level}")
+            return False
+        
+        self.logger.info(f"Blacklisted user joined group | Group: {group_id} | User: {user_id} | Level: {level}")
+        
+        # 检查Bot是否有权限踢人
+        if not await self._check_kick_permission(event, group_id, user_id):
+            self.logger.warning(f"No permission to kick user | Group: {group_id} | User: {user_id}")
+            return False
+        
+        # 尝试踢出用户
+        try:
+            if hasattr(context, 'set_group_kick'):
+                await context.set_group_kick(group_id=group_id, user_id=user_id)
+                self.logger.info(f"Kicked blacklisted user | Group: {group_id} | User: {user_id} | Level: {level}")
+                return True
+        except Exception as e:
+            self.logger.error(f"Kick user failed | Group: {group_id} | User: {user_id} | Error: {e}")
         
         return False
     
@@ -230,10 +312,6 @@ class EventHandler:
             # 如果还是为空，尝试从 event.self_id 获取（兼容旧版本）
             if not bot_id:
                 bot_id = getattr(event, 'self_id', None)
-            
-            # 如果还是为空，尝试从 context 获取
-            if not bot_id and hasattr(self, 'context'):
-                bot_id = self.context.get_bot_id() if hasattr(self.context, 'get_bot_id') else None
             
             # 如果还是为空，尝试从 event.bot.self_id 获取
             if not bot_id and hasattr(event, 'bot'):
@@ -274,6 +352,11 @@ class EventHandler:
             # 可以踢出
             return True
             
-        except (ValueError, TypeError, Exception) as e:
-            self.logger.warning(f"群成员信息获取失败：{str(e)} | Group: {group_id} | User: {user_id}")
+        except (ValueError, TypeError) as e:
+            # 参数转换错误
+            self.logger.warning(f"参数转换错误：{str(e)} | Group: {group_id} | User: {user_id}")
+            return False
+        except Exception as e:
+            # 其他异常（网络错误、API错误等）
+            self.logger.warning(f"群成员信息获取失败：{type(e).__name__}: {str(e)} | Group: {group_id} | User: {user_id}")
             return False
