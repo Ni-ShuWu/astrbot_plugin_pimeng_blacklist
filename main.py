@@ -2,7 +2,7 @@
 
 import asyncio
 from astrbot.api.event import filter, AstrMessageEvent # type: ignore
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.api import logger, AstrBotConfig
 from functools import wraps
 
@@ -11,7 +11,7 @@ from .cache import BlacklistCache
 from .service import BlacklistService
 from .handler import EventHandler
 
-__version__ = "2.8.1"
+__version__ = "2.8.2"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
@@ -42,15 +42,9 @@ def require_token(func):
     return wrapper
 
 
-@register(
-    "astrbot_plugin_pimeng_blacklist",
-    "N(Ni-ShuWu),P(Pimeng's)",
-    "基于皮梦云黑库接入插件，可查询用户是否在黑名单中",
-    __version__
-)
 class PimengBlacklistPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
-        super().__init__(context)
+        super().__init__(context, config)
         self.logger = logger
         
         self._background_tasks: set = set()

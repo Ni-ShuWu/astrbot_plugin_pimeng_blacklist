@@ -18,30 +18,24 @@ class BlacklistService:
         self.logger = logger
         self.handler = handler
         
-        # 黑名单数据
         self.user_blacklist: Dict[str, dict] = {}
         self.group_blacklist: Dict[str, dict] = {}
         
-        # 状态
         self.last_sync: Optional[datetime] = None
         self.sync_task: Optional[asyncio.Task] = None
         
-        # 查询限流（按用户限流，避免全局限流导致的"互相抢限流"问题）
-        self.user_query_times: Dict[str, datetime] = {}  # key: user_id, value: last_query_time
-        self.global_last_query_time: Optional[datetime] = None  # 全局限流时间戳
-        self.query_cooldown = 5  # 查询冷却时间（秒）
-        self.max_query_times_size = 1000  # 最大用户限流记录数
+        self.user_query_times: Dict[str, datetime] = {}
+        self.global_last_query_time: Optional[datetime] = None
+        self.query_cooldown = 5
+        self.max_query_times_size = 1000
         
-        # 查询缓存（短期缓存，避免重复查询API）
-        self.query_cache: Dict[str, tuple] = {}  # key: "type_id", value: (result, timestamp)
-        self.query_cache_ttl = 300  # 缓存有效期（秒）5分钟
-        self.max_cache_size = 1000  # 最大缓存容量
+        self.query_cache: Dict[str, tuple] = {}
+        self.query_cache_ttl = 300
+        self.max_cache_size = 1000
         
-        # 同步锁，防止并发同步
         self._sync_lock = asyncio.Lock()
     
     async def initialize(self):
-        """初始化服务"""
         try:
             await self.sync_blacklist()
         except Exception as e:
@@ -53,7 +47,6 @@ class BlacklistService:
         self.logger.info(f"BlacklistService initialized | Users: {len(self.user_blacklist)} | Groups: {len(self.group_blacklist)} | Sync: {self.sync_interval//60}min")
     
     async def terminate(self):
-        """清理资源"""
         if self.sync_task:
             self.sync_task.cancel()
             try:
@@ -69,7 +62,6 @@ class BlacklistService:
                 pass
     
     async def _scheduled_sync(self):
-        """定时同步"""
         while True:
             try:
                 await asyncio.sleep(self.sync_interval)
@@ -81,10 +73,8 @@ class BlacklistService:
                 await asyncio.sleep(60)
     
     async def _scheduled_cache_cleanup(self):
-        """定时缓存清理"""
         while True:
             try:
-                # 每5分钟清理一次过期缓存
                 await asyncio.sleep(300)
                 self._clean_expired_cache()
             except asyncio.CancelledError:
@@ -94,23 +84,10 @@ class BlacklistService:
                 await asyncio.sleep(60)
     
     async def sync_blacklist(self, force: bool = False) -> bool:
-        """同步云黑库
-        
-        Args:
-            force: 是否强制同步，忽略冷却时间
-            
-        Returns:
-            bool: 同步是否成功
-        """
-        # 使用锁防止并发同步
         async with self._sync_lock:
             return await self._sync_blacklist_internal(force)
     
     async def _sync_blacklist_internal(self, force: bool = False) -> bool:
-        """内部同步方法（已加锁）
-        
-        改进：采用"先建后换"策略，失败时回滚保留旧数据
-        """
         if not self.api.bot_token:
             return False
         
@@ -184,23 +161,14 @@ class BlacklistService:
             self.logger.info(f"Sync OK | Users: {old_users}->{len(self.user_blacklist)}, Groups: {old_groups}->{len(self.group_blacklist)}")
             return True
             
-        except Exception as e:
-            self.logger.error(f"Sync exception: {e}, 正在回滚...")
+        except Exception:
+            self.logger.error(f"Sync ERROR |")
             self.user_blacklist = old_user_blacklist
             self.group_blacklist = old_group_blacklist
             self.logger.info(f"Sync rolled back | Users: {len(self.user_blacklist)}, Groups: {len(self.group_blacklist)}")
             return False
     
     def can_query_api(self, user_id: str = None) -> bool:
-        """检查是否可以查询API（限流检查）
-        
-        Args:
-            user_id: 用户ID，如果为None则使用全局限流
-        
-        Returns:
-            bool: 是否可以查询
-        """
-        # 如果没有提供user_id，使用全局限流
         if user_id is None:
             if self.global_last_query_time is None:
                 return True
@@ -211,7 +179,6 @@ class BlacklistService:
                 return False
             return True
         
-        # 按用户限流
         if user_id not in self.user_query_times:
             return True
         
@@ -224,11 +191,6 @@ class BlacklistService:
         return True
     
     def update_query_time(self, user_id: str = None):
-        """更新查询时间
-        
-        Args:
-            user_id: 用户ID，如果为None则更新全局限流时间
-        """
         if user_id is None:
             self.global_last_query_time = datetime.now()
         else:
@@ -237,7 +199,6 @@ class BlacklistService:
                 self._cleanup_old_query_times()
     
     def _cleanup_old_query_times(self):
-        """清理过期的用户查询时间记录"""
         now = datetime.now()
         expired_users = []
         for uid, last_time in self.user_query_times.items():
@@ -251,28 +212,22 @@ class BlacklistService:
             self.logger.debug(f"清理了 {len(expired_users)} 个过期用户查询记录")
     
     def get_cached_query(self, target_id: str, query_type: str) -> Optional[dict]:
-        """获取缓存的查询结果"""
         cache_key = f"{query_type}_{target_id}"
         if cache_key in self.query_cache:
             result, timestamp = self.query_cache[cache_key]
-            # 检查缓存是否过期
             if (datetime.now() - timestamp).total_seconds() < self.query_cache_ttl:
                 self.logger.debug(f"使用缓存查询结果: {cache_key}")
                 return result
             else:
-                # 缓存过期，删除
                 del self.query_cache[cache_key]
         return None
     
     def set_cached_query(self, target_id: str, query_type: str, result: dict):
-        """设置查询缓存"""
         cache_key = f"{query_type}_{target_id}"
         
-        # 检查缓存是否已满，如果是则先清理过期缓存
         if len(self.query_cache) >= self.max_cache_size:
             self._clean_expired_cache()
             
-            # 如果清理后仍然满了，随机删除一些旧缓存
             if len(self.query_cache) >= self.max_cache_size:
                 excess = len(self.query_cache) - self.max_cache_size + 100
                 keys_to_remove = list(self.query_cache.keys())[:excess]
@@ -284,7 +239,6 @@ class BlacklistService:
         self.logger.debug(f"缓存查询结果: {cache_key}")
     
     def _clean_expired_cache(self):
-        """清理过期缓存"""
         now = datetime.now()
         expired_keys = []
         for key, (_, timestamp) in self.query_cache.items():
@@ -298,31 +252,24 @@ class BlacklistService:
             self.logger.debug(f"清理了 {len(expired_keys)} 个过期缓存")
     
     def is_user_blacklisted(self, user_id: str) -> bool:
-        """检查用户是否在黑名单中"""
         return user_id in self.user_blacklist
     
     def is_group_blacklisted(self, group_id: str) -> bool:
-        """检查群组是否在黑名单中"""
         return group_id in self.group_blacklist
     
     def get_user_data(self, user_id: str) -> Optional[dict]:
-        """获取用户黑名单数据"""
         return self.user_blacklist.get(user_id)
     
     def get_group_data(self, group_id: str) -> Optional[dict]:
-        """获取群组黑名单数据"""
         return self.group_blacklist.get(group_id)
     
     def remove_user(self, user_id: str):
-        """从用户黑名单中移除"""
         self.user_blacklist.pop(user_id, None)
     
     def remove_group(self, group_id: str):
-        """从群组黑名单中移除"""
         self.group_blacklist.pop(group_id, None)
     
     def get_stats(self) -> Dict[str, Union[int, str]]:
-        """获取统计信息"""
         return {
             "user_blacklist": len(self.user_blacklist),
             "group_blacklist": len(self.group_blacklist),
@@ -331,7 +278,6 @@ class BlacklistService:
         }
     
     def _get_next_sync_minutes(self) -> int:
-        """获取下次同步剩余分钟数"""
         if not self.last_sync:
             return 0
         
