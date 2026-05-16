@@ -43,6 +43,10 @@ class EventHandler:
                 now = datetime.now()
                 last_warn = self.cache.get_private_warn_time(user_id)
                 
+                reason = user_data.get('reason', '未知') if user_data else '未知'
+                added_by = user_data.get('added_by', None) if user_data else None
+                added_by_line = f"\n添加者：{added_by}" if added_by else ""
+                
                 should_warn = False
                 if is_wake_up:
                     if last_warn is None or last_warn.date() != now.date():
@@ -57,7 +61,7 @@ class EventHandler:
                         f"⚠️ 您已被列入云黑名单。\n"
                         f"━━━━━━━━━━━━━━\n"
                         f"违规等级: {level}\n"
-                        f"原因: {user_data.get('reason', '未知') if user_data else '未知'}\n"
+                        f"原因: {reason}{added_by_line}\n"
                         f"━━━━━━━━━━━━━━\n"
                         f"详情与申诉: https://云黑.皮梦.wtf"
                     )
@@ -82,6 +86,8 @@ class EventHandler:
                 user_level = user_data.get("level", 1) if user_data else 1
                 
                 reason = user_data.get('reason', '未知') if user_data else '未知'
+                added_by = user_data.get('added_by', None) if user_data else None
+                added_by_line = f"\n添加者：{added_by}" if added_by else ""
                 
                 if self.enable_auto_kick and user_level >= 3:
                     can_kick = await self._check_kick_permission(event, group_id, user_id)
@@ -95,7 +101,7 @@ class EventHandler:
                                 f"━━━━━━━━━━━━━━\n"
                                 f"用户：{user_id}\n"
                                 f"等级：{user_level}\n"
-                                f"原因：{reason}"
+                                f"原因：{reason}{added_by_line}"
                             )
                 
                 if is_wake_up and self.enable_message_intercept:
@@ -106,7 +112,7 @@ class EventHandler:
                         f"━━━━━━━━━━━━━━\n"
                         f"用户：{user_id}\n"
                         f"等级：{user_level}\n"
-                        f"原因：{reason}"
+                        f"原因：{reason}{added_by_line}"
                     )
         
         return None

@@ -12,11 +12,16 @@ from .cache import BlacklistCache
 from .service import BlacklistService
 from .handler import EventHandler
 
-__version__ = "2.8.4"
+__version__ = "2.9.0"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
 LEVEL_EMOJIS = {1: "🟢", 2: "🟡", 3: "🔴", 4: "⛔"}
+
+USER_TYPE_ALIASES = {
+    "user": "user", "users": "user", "-u": "user", "u": "user", "用户": "user",
+    "group": "group", "groups": "group", "-g": "group", "g": "group", "群组": "group", "群": "group",
+}
 
 
 def require_op(func):
@@ -237,6 +242,9 @@ class PimengBlacklistPlugin(Star):
     @filter.command("bl_check")
     async def cmd_check(self, event: AstrMessageEvent, target: str = None, user_type: str = None):
         """检查黑名单状态 - 不指定类型时同时查询用户和群组"""
+        if user_type is not None:
+            user_type = self._normalize_user_type(user_type)
+        
         if target is not None:
             target = str(target)
             if not target.isdigit():
@@ -264,7 +272,7 @@ class PimengBlacklistPlugin(Star):
             return
         
         if user_type not in ("user", "group"):
-            yield event.plain_result("❌ 参数错误：user_type 必须是'user'或'group'")
+            yield event.plain_result("❌ 参数错误：user_type 必须是 user/group/用户/群组 或使用 -u/-g")
             return
         
         result = await self._query_blacklist(target_id, user_type, check_rate_limit=True)
@@ -294,11 +302,13 @@ class PimengBlacklistPlugin(Star):
                 try:
                     level = int(parts[1])
                 except (ValueError, TypeError):
-                    if parts[1] in ("user", "group"):
-                        user_type = parts[1]
+                    normalized = self._normalize_user_type(parts[1])
+                    if normalized:
+                        user_type = normalized
             if len(parts) >= 3:
-                if parts[2] in ("user", "group"):
-                    user_type = parts[2]
+                normalized = self._normalize_user_type(parts[2])
+                if normalized:
+                    user_type = normalized
         
         if not user_id or not reason:
             yield event.plain_result("❌ 参数错误：需要提供user_id和reason")
@@ -316,10 +326,7 @@ class PimengBlacklistPlugin(Star):
             yield event.plain_result("❌ 参数错误：user_id必须是数字")
             return
         
-        # 检查 user_type 参数
-        if user_type not in ("user", "group"):
-            yield event.plain_result("❌ 参数错误：user_type必须是'user'或'group'")
-            return
+        user_type = self._normalize_user_type(user_type) or "user"
         
         # 等级范围统一为1-4
         if not 1 <= level <= 4:
@@ -364,10 +371,7 @@ class PimengBlacklistPlugin(Star):
             yield event.plain_result("❌ 参数错误：user_id必须是数字")
             return
         
-        # 检查 user_type 参数
-        if user_type not in ("user", "group"):
-            yield event.plain_result("❌ 参数错误：user_type必须是'user'或'group'")
-            return
+        user_type = self._normalize_user_type(user_type) or "user"
         
         result = await self.api.remove_from_blacklist(user_id, user_type, reason or "管理员移除")
         
@@ -441,6 +445,11 @@ class PimengBlacklistPlugin(Star):
         
         return "\n".join(lines)
     
+    def _normalize_user_type(self, raw: str) -> Optional[str]:
+        if not raw:
+            return None
+        return USER_TYPE_ALIASES.get(raw.lower().strip())
+    
     def _extract_at_from_event(self, event: AstrMessageEvent) -> Optional[str]:
         """从事件消息链中提取第一个@提及的QQ号"""
         try:
@@ -467,7 +476,7 @@ class PimengBlacklistPlugin(Star):
             "━━━━━━━━━━━━━━",
             "📋 命令列表",
             "━━━━━━━━━━━━━━",
-            "/bl_check [ID] [user/group] - 检查黑名单状态",
+            "/bl_check [ID] [类型] - 检查黑名单状态",
         ]
         
         if is_op:
@@ -476,8 +485,8 @@ class PimengBlacklistPlugin(Star):
                 "🔐 管理员命令",
                 "/bl_status - 查看同步状态",
                 "/bl_sync - 强制同步",
-                "/bl_add <ID> <原因> [等级] [user/group] - 添加黑名单",
-                "/bl_remove <ID> [原因] [user/group] - 移除黑名单",
+                "/bl_add <ID> <原因> [等级] [类型] - 添加黑名单",
+                "/bl_remove <ID> [原因] [类型] - 移除黑名单",
                 "/bl_list [页码] - 查看列表",
             ])
         
@@ -485,8 +494,8 @@ class PimengBlacklistPlugin(Star):
             "━━━━━━━━━━━━━━",
             "📝 参数说明",
             "━━━━━━━━━━━━━━",
-            "• ID: QQ号或群号",
-            "• user/group: 查询/操作类型，默认user",
+            "• ID: QQ号或群号，支持 @提及 提取",
+            "• 类型: user / -u / 用户（默认）| group / -g / 群组",
             "• 等级: 1-轻微 2-一般 3-平台 4-严重（等级4需面板操作）",
             "━━━━━━━━━━━━━━",
             "🌐 申诉: https://云黑.皮梦.wtf",
