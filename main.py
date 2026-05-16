@@ -11,7 +11,7 @@ from .cache import BlacklistCache
 from .service import BlacklistService
 from .handler import EventHandler
 
-__version__ = "2.8.2"
+__version__ = "2.8.3"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
@@ -54,13 +54,15 @@ class PimengBlacklistPlugin(Star):
         bot_token = config.get("bot_token", "")
         sync_interval = max(60, min(config.get("sync_interval", 300), 3600))
         enable_auto_kick = config.get("enable_auto_kick", True)
+        enable_quit_on_admin_join = config.get("enable_quit_on_admin_join", True)
+        enable_message_intercept = config.get("enable_message_intercept", True)
         request_timeout = max(1, min(config.get("request_timeout", 10), 30))
         
         # 初始化各个模块
         self.api = PimengAPI(api_base, bot_token, request_timeout, self.logger)
         self.cache = BlacklistCache()
         self.service = BlacklistService(self.api, self.cache, sync_interval, self.logger)
-        self.handler = EventHandler(self.service, self.cache, enable_auto_kick, self.logger)
+        self.handler = EventHandler(self.service, self.cache, enable_auto_kick, enable_quit_on_admin_join, enable_message_intercept, self.logger)
     
     async def initialize(self):
         """初始化"""
