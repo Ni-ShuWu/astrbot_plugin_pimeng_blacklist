@@ -13,10 +13,12 @@ from .cache import BlacklistCache
 class EventHandler:
     """事件处理器"""
     
-    def __init__(self, service: BlacklistService, cache: BlacklistCache, enable_auto_kick: bool, logger):
+    def __init__(self, service: BlacklistService, cache: BlacklistCache, enable_auto_kick: bool, enable_quit_on_admin_join: bool, enable_message_intercept: bool, logger):
         self.service = service
         self.cache = cache
         self.enable_auto_kick = enable_auto_kick
+        self.enable_quit_on_admin_join = enable_quit_on_admin_join
+        self.enable_message_intercept = enable_message_intercept
         self.logger = logger
         
         self.BOT_JOIN_KEYWORDS = ["邀请", "加入了群聊", "加入了", "加入群", "加群"]
@@ -66,39 +68,28 @@ class EventHandler:
             group_id = str(event.get_group_id())
             
             if self.service.is_group_blacklisted(group_id):
-                if group_id in self.quit_groups:
-                    self.logger.debug(f"Already quit group, ignoring | Group: {group_id}")
-                    event.stop_event()
-                    return None
-                
                 group_data = self.service.get_group_data(group_id)
                 group_level = group_data.get("level", 1) if group_data else 1
                 
                 self.logger.info(f"Bot in Blacklisted Group | Group: {group_id} | Level: {group_level}")
                 
-                self.quit_groups.add(group_id)
-                
-                try:
-                    if hasattr(context, 'quit_group'):
-                        await context.quit_group(group_id)
-                        self.logger.info(f"Bot Quit Group | Group: {group_id}")
-                except Exception as e:
-                    self.logger.error(f"Quit Group Failed | Group: {group_id} | Error: {e}")
-                    self.quit_groups.discard(group_id)
-                
+                await self._quit_group_if_possible(group_id, context)
                 event.stop_event()
                 return None
             
-            if self.service.is_user_blacklisted(user_id) and self.enable_auto_kick:
+            if self.service.is_user_blacklisted(user_id):
                 user_data = self.service.get_user_data(user_id)
                 user_level = user_data.get("level", 1) if user_data else 1
                 
-                if user_level >= 3:
+                reason = user_data.get('reason', '未知') if user_data else '未知'
+                
+                if self.enable_message_intercept:
+                    event.stop_event()
+                
+                if self.enable_auto_kick and user_level >= 3:
                     can_kick = await self._check_kick_permission(event, group_id, user_id)
                     
                     if can_kick:
-                        user_data = self.service.get_user_data(user_id)
-                        reason = user_data.get('reason', '未知') if user_data else '未知'
                         kicked = await self._kick_user(group_id, user_id, event, context)
                         if kicked:
                             self.logger.info(f"Kicked blacklisted user | User: {user_id} | Level: {user_level} | Group: {group_id}")
@@ -109,9 +100,16 @@ class EventHandler:
                                 f"等级：{user_level}\n"
                                 f"原因：{reason}"
                             )
-                    
-                    event.stop_event()
-                    return None
+                
+                if self.enable_message_intercept:
+                    self.logger.info(f"Intercepted blacklisted user | User: {user_id} | Level: {user_level} | Group: {group_id}")
+                    return (
+                        f"⚠️ 云黑用户已被拦截\n"
+                        f"━━━━━━━━━━━━━━\n"
+                        f"用户：{user_id}\n"
+                        f"等级：{user_level}\n"
+                        f"原因：{reason}"
+                    )
         
         return None
     
@@ -272,14 +270,35 @@ class EventHandler:
         if not self.service.is_group_blacklisted(group_id):
             return False
         
-        if group_id in self.quit_groups:
-            self.logger.debug(f"Already quit group, ignoring join event | Group: {group_id}")
-            return True
-        
         group_data = self.service.get_group_data(group_id)
         level = group_data.get("level", 1) if group_data else 1
         
         self.logger.info(f"Bot joined blacklisted group | Group: {group_id} | Level: {level}")
+        
+        return await self._quit_group_if_possible(group_id, context)
+    
+    async def _get_user_group_role(self, event: AstrMessageEvent, group_id: str, user_id: str) -> Optional[str]:
+        """获取用户在群组中的角色（owner/admin/member）"""
+        bot = getattr(event, 'bot', None)
+        if not bot or not hasattr(bot, 'api') or not hasattr(bot.api, 'call_action'):
+            return None
+        
+        try:
+            user_info = await bot.api.call_action(
+                'get_group_member_info',
+                user_id=int(user_id),
+                group_id=int(group_id),
+                no_cache=True
+            )
+            return user_info.get("role", "member")
+        except Exception:
+            return None
+    
+    async def _quit_group_if_possible(self, group_id: str, context) -> bool:
+        """尝试退出群组，带防重入和错误处理"""
+        if group_id in self.quit_groups:
+            self.logger.debug(f"Already quit group, ignoring | Group: {group_id}")
+            return True
         
         self.quit_groups.add(group_id)
         
@@ -295,24 +314,37 @@ class EventHandler:
         return False
     
     async def _handle_member_join(self, group_id: str, user_id: str, event: AstrMessageEvent, context) -> bool:
-        """处理普通成员加入群聊事件"""
-        if not self.enable_auto_kick:
-            return False
+        """处理普通成员加入群聊事件
         
+        1. 黑名单用户为群主/管理员 → Bot自动退群
+        2. 黑名单用户等级≥3且Bot有权限 → 踢出
+        3. 黑名单用户等级<3 或 无权限 → 仅记录日志
+        """
         if not self.service.is_user_blacklisted(user_id):
             return False
         
         user_data = self.service.get_user_data(user_id)
         level = user_data.get("level", 1) if user_data else 1
         
+        self.logger.info(f"Blacklisted user joined group | Group: {group_id} | User: {user_id} | Level: {level}")
+        
+        user_role = await self._get_user_group_role(event, group_id, user_id)
+        
+        if self.enable_quit_on_admin_join and user_role in ("owner", "admin"):
+            self.logger.warning(f"Blacklisted user is {user_role} of group, bot will quit | Group: {group_id} | User: {user_id}")
+            await self._quit_group_if_possible(group_id, context)
+            return True
+        
+        if not self.enable_auto_kick:
+            self.logger.debug(f"Auto kick disabled, skipping | User: {user_id} | Group: {group_id}")
+            return False
+        
         if level < 3:
             self.logger.debug(f"User level too low, not kicking | User: {user_id} | Level: {level}")
             return False
         
-        self.logger.info(f"Blacklisted user joined group | Group: {group_id} | User: {user_id} | Level: {level}")
-        
         if not await self._check_kick_permission(event, group_id, user_id):
-            self.logger.warning(f"No permission to kicked user | Group: {group_id} | User: {user_id}")
+            self.logger.warning(f"No permission to kick user | Group: {group_id} | User: {user_id}")
             return False
         
         kicked = await self._kick_user(group_id, user_id, event, context)

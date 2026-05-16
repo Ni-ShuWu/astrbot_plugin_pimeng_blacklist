@@ -25,6 +25,18 @@
     "hint": "是否自动踢出等级≥3 的黑名单用户",
     "default": true
   },
+  "enable_quit_on_admin_join": {
+    "type": "bool",
+    "description": "黑名单管理员进群自动退群",
+    "hint": "当黑名单用户是群主/管理员加入群聊时，Bot自动退群",
+    "default": true
+  },
+  "enable_message_intercept": {
+    "type": "bool",
+    "description": "启用消息拦截提醒",
+    "hint": "黑名单用户在群里发消息时拦截并提醒已被拉黑",
+    "default": true
+  },
   "request_timeout": {
     "type": "int",
     "description": "API 请求超时（秒）",
