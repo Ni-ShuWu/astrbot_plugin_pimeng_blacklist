@@ -1,6 +1,7 @@
 """皮梦云黑库插件主入口 - 整合各个模块"""
 
 import asyncio
+from typing import Optional
 from astrbot.api.event import filter, AstrMessageEvent # type: ignore
 from astrbot.api.star import Context, Star
 from astrbot.api import logger, AstrBotConfig
@@ -274,6 +275,31 @@ class PimengBlacklistPlugin(Star):
     @require_token
     async def cmd_add(self, event: AstrMessageEvent, user_id: str = None, reason: str = None, level: int = 1, user_type: str = "user"):
         """添加到黑名单 - 支持用户和群聊，默认用户"""
+        # 尝试从@提及中提取user_id
+        at_id = self._extract_at_from_event(event)
+        if at_id:
+            user_id = at_id
+            # 使用@时解析器参数会偏移，从message_str重新解析
+            msg = event.message_str.strip()
+            for cmd_prefix in ["/bl_add ", "bl_add "]:
+                if msg.startswith(cmd_prefix):
+                    rest = msg[len(cmd_prefix):].strip()
+                    break
+            else:
+                rest = msg
+            parts = [p for p in rest.split() if p]
+            if len(parts) >= 1:
+                reason = parts[0]
+            if len(parts) >= 2:
+                try:
+                    level = int(parts[1])
+                except (ValueError, TypeError):
+                    if parts[1] in ("user", "group"):
+                        user_type = parts[1]
+            if len(parts) >= 3:
+                if parts[2] in ("user", "group"):
+                    user_type = parts[2]
+        
         if not user_id or not reason:
             yield event.plain_result("❌ 参数错误：需要提供user_id和reason")
             return
@@ -414,6 +440,22 @@ class PimengBlacklistPlugin(Star):
         lines.append(f"使用 /bl_list <页码> 查看更多")
         
         return "\n".join(lines)
+    
+    def _extract_at_from_event(self, event: AstrMessageEvent) -> Optional[str]:
+        """从事件消息链中提取第一个@提及的QQ号"""
+        try:
+            message_obj = getattr(event, 'message_obj', None)
+            if message_obj:
+                msg_chain = getattr(message_obj, 'message', None)
+                if msg_chain:
+                    for comp in msg_chain:
+                        if getattr(comp, 'type', None) == 'at':
+                            qq = getattr(comp, 'qq', None)
+                            if qq:
+                                return str(qq)
+        except Exception:
+            pass
+        return None
     
     @filter.command("bl_help")
     async def cmd_help(self, event: AstrMessageEvent):

@@ -31,13 +31,13 @@ class EventHandler:
         
         is_group = hasattr(event, 'get_group_id') and event.get_group_id() is not None
         
+        is_wake_up = False
+        if hasattr(event, 'is_wake_up'):
+            is_wake_up = event.is_wake_up()
+        
         if self.service.is_user_blacklisted(user_id):
             user_data = self.service.get_user_data(user_id)
             level = user_data.get("level", 1) if user_data else 1
-            
-            is_wake_up = False
-            if hasattr(event, 'is_wake_up'):
-                is_wake_up = event.is_wake_up()
             
             if not is_group:
                 now = datetime.now()
@@ -83,9 +83,6 @@ class EventHandler:
                 
                 reason = user_data.get('reason', '未知') if user_data else '未知'
                 
-                if self.enable_message_intercept:
-                    event.stop_event()
-                
                 if self.enable_auto_kick and user_level >= 3:
                     can_kick = await self._check_kick_permission(event, group_id, user_id)
                     
@@ -101,7 +98,8 @@ class EventHandler:
                                 f"原因：{reason}"
                             )
                 
-                if self.enable_message_intercept:
+                if is_wake_up and self.enable_message_intercept:
+                    event.stop_event()
                     self.logger.info(f"Intercepted blacklisted user | User: {user_id} | Level: {user_level} | Group: {group_id}")
                     return (
                         f"⚠️ 云黑用户已被拦截\n"
