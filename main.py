@@ -12,7 +12,7 @@ from .cache import BlacklistCache
 from .service import BlacklistService
 from .handler import EventHandler
 
-__version__ = "2.8.3"
+__version__ = "2.8.4"
 
 # 常量定义
 LEVEL_NAMES = {1: "轻微", 2: "一般", 3: "平台", 4: "严重"}
