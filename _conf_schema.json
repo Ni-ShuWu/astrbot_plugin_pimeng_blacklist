@@ -46,8 +46,8 @@
   "enable_report_on_mute": {
     "type": "bool",
     "description": "Bot被禁言自动上报",
-    "hint": "Bot在群内被禁言超过阈值时，自动将该群和执行禁言的管理员同步至云黑库",
-    "default": true
+    "hint": "Bot在群内被禁言超过阈值时，自动将该群和执行禁言的管理员同步至云黑库（默认关闭，防止正常管理操作导致误伤）",
+    "default": false
   },
   "mute_threshold_minutes": {
     "type": "int",
@@ -58,8 +58,8 @@
   "enable_report_on_kick": {
     "type": "bool",
     "description": "Bot被踢出群自动上报",
-    "hint": "Bot被踢出群聊时，自动将该群和执行踢出的管理员同步至云黑库",
-    "default": true
+    "hint": "Bot被踢出群聊时，自动将该群和执行踢出的管理员同步至云黑库（默认关闭，防止正常管理操作导致误伤）",
+    "default": false
   },
   "report_level": {
     "type": "int",

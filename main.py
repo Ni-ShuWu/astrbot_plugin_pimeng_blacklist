@@ -65,14 +65,15 @@ class PimengBlacklistPlugin(Star):
         enable_message_intercept = config.get("enable_message_intercept", True)
         request_timeout = max(1, min(config.get("request_timeout", 10), 30))
         
-        # Notice report configuration
-        enable_report_on_mute = config.get("enable_report_on_mute", True)
+        # Notice report configuration (默认关闭：被禁言/被踢出属正常群管理操作时，
+        # 自动上报会造成云黑库误伤，需管理员显式开启)
+        enable_report_on_mute = config.get("enable_report_on_mute", False)
         mute_threshold_minutes = max(1, min(config.get("mute_threshold_minutes", 10), 43200))
-        enable_report_on_kick = config.get("enable_report_on_kick", True)
+        enable_report_on_kick = config.get("enable_report_on_kick", False)
         report_level = config.get("report_level", 3)
         
         # Initialize modules
-        self.api = PimengAPI(api_base, bot_token, request_timeout, self.logger)
+        self.api = PimengAPI(api_base, bot_token, request_timeout, self.logger, __version__)
         self.cache = BlacklistCache()
         self.service = BlacklistService(self.api, self.cache, sync_interval, self.logger)
         self.handler = EventHandler(self.service, self.cache, enable_auto_kick, enable_quit_on_admin_join, enable_message_intercept, self.logger)
@@ -283,13 +284,11 @@ class PimengBlacklistPlugin(Star):
 
             user_result = await self._query_blacklist(target_id, "user", check_rate_limit=False)
             group_result = await self._query_blacklist(target_id, "group", check_rate_limit=False)
-            
-            results.append(f"[User]\n{user_result}")
-            results.append(f"[Group]\n{group_result}")
-            
-            if can_query:
-                self.service.update_query_time(query_user_id)
-            
+
+            results = [f"[User]\n{user_result}", f"[Group]\n{group_result}"]
+
+            self.service.update_query_time(query_user_id)
+
             yield event.plain_result("\n\n".join(results))
             return
         

@@ -57,9 +57,9 @@ pimeng_blacklist:
   enable_quit_on_admin_join: true            # 黑名单管理员进群时 Bot 退群
   enable_message_intercept: true             # 黑名单用户与 Bot 互动时拦截提醒
   request_timeout: 10                        # API 请求超时（秒），1~30
-  enable_report_on_mute: true                # Bot被禁言超阈值时自动上报群+管理员
+  enable_report_on_mute: false               # Bot被禁言超阈值时自动上报群+管理员（默认关闭）
   mute_threshold_minutes: 10                 # 禁言上报阈值（分钟）
-  enable_report_on_kick: true                # Bot被踢出群时自动上报群+管理员
+  enable_report_on_kick: false               # Bot被踢出群时自动上报群+管理员（默认关闭）
   report_level: 3                            # 自动上报使用的黑名单等级（1~3）
 ```
 
@@ -74,9 +74,9 @@ pimeng_blacklist:
 | `enable_quit_on_admin_join` | bool | true | 黑名单管理员进群时 Bot 退群 |
 | `enable_message_intercept` | bool | true | 群聊中仅黑名单用户与 Bot 互动时拦截提醒 |
 | `request_timeout` | int | 10 | API 请求超时（秒），范围 1~30 |
-| `enable_report_on_mute` | bool | true | Bot 被禁言超过阈值时自动上报群和管理员至云黑库 |
+| `enable_report_on_mute` | bool | false | Bot 被禁言超过阈值时自动上报群和管理员至云黑库（默认关闭，防止正常管理操作导致误伤） |
 | `mute_threshold_minutes` | int | 10 | 禁言上报阈值（分钟），用户可自行调节 |
-| `enable_report_on_kick` | bool | true | Bot 被踢出群时自动上报群和管理员至云黑库 |
+| `enable_report_on_kick` | bool | false | Bot 被踢出群时自动上报群和管理员至云黑库（默认关闭，防止正常管理操作导致误伤） |
 | `report_level` | int | 3 | 自动上报使用的黑名单等级，1~3（等级 4 需面板操作） |
 
 ## 命令
