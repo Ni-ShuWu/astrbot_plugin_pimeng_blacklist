@@ -12,11 +12,12 @@ from typing import Optional
 class PimengAPI:
     """皮梦云黑库API客户端"""
     
-    def __init__(self, api_base: str, bot_token: str, request_timeout: int, logger):
+    def __init__(self, api_base: str, bot_token: str, request_timeout: int, logger, version: str = "3.1.0"):
         self.api_base = api_base.rstrip("/")
         self.bot_token = bot_token
         self.request_timeout = request_timeout
         self.logger = logger
+        self.version = version
         
         parsed = urllib.parse.urlparse(self.api_base)
         self.scheme = parsed.scheme or "https"
@@ -28,6 +29,18 @@ class PimengAPI:
         
         if self.scheme == "https":
             self._ssl_context = ssl.create_default_context()
+        else:
+            # 非 HTTPS：仅允许本地调试地址，远程主机强制升级为 HTTPS，
+            # 防止 Bot Token 经明文 HTTP 头泄露
+            hostname = self.host.rsplit(":", 1)[0].strip("[]").lower()
+            if hostname in ("localhost", "127.0.0.1", "::1"):
+                self.logger.warning(f"API 地址使用非 HTTPS ({self.scheme}://{self.host})，仅限本地调试，Token 将明文传输")
+            else:
+                self.logger.warning(
+                    f"API 地址 {self.api_base} 不是 HTTPS，为防止 Bot Token 明文泄露，已强制使用 HTTPS"
+                )
+                self.scheme = "https"
+                self._ssl_context = ssl.create_default_context()
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session (reuse connection)."""
@@ -136,7 +149,7 @@ class PimengAPI:
         
         headers = {
             "Authorization": self.bot_token if self.bot_token else "",
-            "User-Agent": "PimengBlacklist/2.9.2",
+            "User-Agent": f"PimengBlacklist/{self.version}",
             "Accept": "application/json",
         }
         
